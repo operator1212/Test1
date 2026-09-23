@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subject 09 — Test Chamber</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0c0e12; overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; cursor: none; }
+    #title {
+      position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center, rgba(20,6,10,0.55), rgba(5,2,4,0.92));
+      color: #fff; font-family: "Trebuchet MS", Verdana, sans-serif; cursor: pointer; user-select: none; text-align: center;
+    }
+    #title h1 { font-size: 64px; margin: 0; letter-spacing: 8px; color: #ff4d5e; text-shadow: 0 0 24px #a00018; }
+    #title p { margin: 8px 0; color: #d9e4f7; }
+    #title .hint { margin-top: 28px; font-size: 20px; color: #ffe36b; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.35; } }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="title">
+    <h1>SUBJECT 09</h1>
+    <p>Test Chamber 00 — gameplay sandbox</p>
+    <p>Harpoon a guard's leg to the wall. Then find the scientist. Bring the prototype laser.</p>
+    <div class="hint">click to begin</div>
+  </div>
+  <script src="js/util.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/physics.js"></script>
+  <script src="js/ragdoll.js"></script>
+  <script src="js/blood.js"></script>
+  <script src="js/npc.js"></script>
+  <script src="js/weapons.js"></script>
+  <script src="js/player.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
