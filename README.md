@@ -79,4 +79,4 @@ js/main.js      boot and fixed-timestep loop
 ```
 
 To edit the test map, change the ASCII in `TEST_MAP` (`js/map.js`): `#` wall, `=` girder,
-`P` player, `G` guard dummy, `S` scientist.
+`P` player, `G` guard, `S` scientist.
