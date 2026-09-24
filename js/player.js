@@ -306,9 +306,10 @@ class Player {
       Sfx.harpoon();
     } else if (w === 2) {
       const base = Math.atan2(a.y, a.x);
-      for (let k = 0; k < 7; k++) {
-        const ang = base + rand(-0.15, 0.15), sp = rand(1300, 1650);
-        g.shots.push(new Bullet(m.x, m.y, Math.cos(ang) * sp, Math.sin(ang) * sp, 'player', 7, 'shotgun', null));
+      // Devastating point blank, weak past ~12 tiles.
+      for (let k = 0; k < 8; k++) {
+        const ang = base + rand(-0.21, 0.21), sp = rand(1300, 1650);
+        g.shots.push(new Bullet(m.x, m.y, Math.cos(ang) * sp, Math.sin(ang) * sp, 'player', 14, 'shotgun', null, 380));
       }
       // Big kick: aim down and fire to boost a jump.
       this.vx -= a.x * 360; this.vy -= a.y * 420;

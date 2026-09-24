@@ -59,6 +59,18 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
   headshot). The heart means collapse and a fast bleed-out. The spine means paralysis. The neck
   and thigh arteries bleed heavily. NPCs below a quarter of their health go down and bleed out.
   Every damage source checks these zones.
+- **Reactions** (a simplified RDR2-style layer on top of the active ragdoll):
+  - **Stagger**: non-lethal hits make NPCs stumble with the hit, lean and windmill their
+    arms. Big hits floor them.
+  - **Dying**: NPCs don't flop straight away. Their knees buckle, or they clutch the wound, or
+    they stagger backwards, for about 1-2 seconds, then they go limp and twitch. A headshot
+    is a short rigid collapse. A body whose head or torso was cut off stays up for a moment.
+  - **Losing a leg**: they crawl away from you on their arms, lie there writhing, or go into
+    shock and bleed out. Downed and paralysed NPCs sometimes crawl too, with their arms only.
+  - **Throat wounds**: they sometimes stay on their feet, clutching their throat and spraying
+    blood, until they collapse.
+  - **Head grazes**: losing up to 3 brain pixels has about a 35% chance of being survived.
+    They become dazed: head lolling, wandering aimlessly, falling over now and then.
 - **Slams**: bodies thrown by the tentacle, rammed by a dash, blown up or dropped from a height
   take impact damage. Hard enough hits burst tissue and crack skulls.
 - **Weapons** (`js/weapons.js`):
@@ -66,9 +78,11 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
     soaks up the spike's momentum. If the spike is too slow to reach a wall, it stays lodged
     in the body.
   - **Prototype laser**: burns away the exact pixels it touches. It overheats.
-  - **Shotgun**: 7 pellets that punch pixel holes. The recoil is strong enough to boost a jump.
-  - **Saw launcher**: a spinning blade that ricochets off walls and cuts through everything it
-    touches.
+  - **Shotgun**: 8 pellets. Devastating up close. Damage, hole size and knockback fall off
+    with distance, and pellets fizzle out past about 12 tiles. The recoil can boost a jump.
+  - **Saw launcher**: a spinning blade that ricochets off walls up to 3 times. It chews
+    through flesh gradually and loses speed with every pixel it cuts, so it usually gets
+    through about one torso or two limbs before it sticks in someone.
   - **Bile bomb**: a lobbed acid sac that bursts, blowing chunks off anyone nearby and
     splattering green bile.
 - **Tentacle**: latch onto terrain to zip and swing, or grab any body part and swing it with the

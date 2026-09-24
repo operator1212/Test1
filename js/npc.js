@@ -8,6 +8,9 @@ const SCI_COWER_LINES = ['Please! I have a family!', 'I was following protocol!'
 const PAIN_LINES = ['AAAGH!', 'MY LEG!', 'Get it out!', 'HELP ME!', 'Nnngh!'];
 const SOLDIER_LINES = ['CONTAINMENT BREACH!', 'Target sighted!', 'Put it down!', 'Open fire!'];
 const DOWNED_LINES = ['help... me...', 'I cant feel my legs', 'mom...', 'so cold...'];
+const LEGLESS_LINES = ['MY LEGS!', 'WHERE ARE MY LEGS', 'no no no no', 'I have to get out...'];
+const DAZED_LINES = ['wh... what?', 'who turned off the...', 'mmh... mom?', 'the floor is... moving'];
+const CLUTCH_LINES = ['*gurgle*', 'hhk... hhk...', 'can\'t... breathe'];
 const MAX_HP = { guard: 100, scientist: 80, soldier: 120 };
 
 class NPC {
@@ -47,6 +50,14 @@ class NPC {
     this.gunCool = rand(0.5, 1.5);
     this.aimAng = 0;
     this.impactT = 0;
+    // Reaction layer (euphoria-lite): stagger | clutch | dazed, plus crawl when downed.
+    this.react = null;
+    this.crawling = false;
+    this.legsLost = false;
+    this.paralysed = false;
+    this.brainLost = 0; this.brainRolled = false; this.brainSurvives = false;
+    this.dyingT = 0; this.dyingDur = 1; this.dyingStyle = 'buckle'; this.dieVel = 0;
+    this.twitchT = 0;
   }
 
   say(text, time = 2.2) { this.bubble = { text, t: time }; }
@@ -63,14 +74,48 @@ class NPC {
     if (this.hp <= 0) this.die(cause);
   }
 
-  die(cause) {
+  // style: 'buckle' | 'clutch' | 'back' | 'rigid' (headshot) | 'headless'
+  die(cause, style) {
     if (!this.alive) return;
     this.alive = false;
     this.hp = 0;
-    this.drive = 0;
     this.killedBy = cause;
     this.bubble = null;
+    this.react = null;
+    // Stay up for a moment and go down with some drama, if we were standing.
+    const standing = this.drive > 0.4 && !this.downed && this.stun <= 0 && this.legsIntact() && !this.grabbed &&
+      !this.rag.parts.some((p) => (p.pin || p.held) && this.main.has(p));
+    if (standing) {
+      this.dyingStyle = style || pick(['buckle', 'buckle', 'clutch', 'back']);
+      this.dyingDur = this.dyingStyle === 'rigid' ? 0.45 : this.dyingStyle === 'headless' ? rand(0.7, 1.3) : rand(1.1, 2.1);
+      this.dyingT = this.dyingDur;
+      this.dieVel = (this.dyingStyle === 'back' ? -1 : 1) * this.facing * rand(10, 30);
+    } else {
+      this.drive = 0;
+      this.twitchT = rand(1, 2.5);
+    }
     this.game.onNpcDeath(this, cause);
+  }
+
+  updateDead(dt) {
+    if (this.dyingT > 0) {
+      this.dyingT -= dt;
+      const lost = !this.legsIntact() || this.grabbed || this.rag.parts.some((p) => (p.pin || p.held) && this.main.has(p));
+      if (lost || this.dyingT <= 0) { this.dyingT = 0; this.drive = 0; this.twitchT = rand(1.5, 3); return; }
+      const f = 1 - this.dyingT / this.dyingDur;
+      this.drive = Math.pow(1 - f, 0.7) * (this.dyingStyle === 'rigid' ? 1 : 0.85);
+      if (this.pathClear(sign(this.dieVel))) this.rootX += this.dieVel * dt;
+      this.poseDrive(this.pose(f));
+      return;
+    }
+    // Post-mortem twitches.
+    if (this.twitchT > 0) {
+      this.twitchT -= dt;
+      if (Math.random() < dt * 5 * (this.twitchT / 3)) {
+        const cand = this.rag.parts.filter((p) => this.main.has(p) && !p.pin && !p.held && (p.role === R.HAND_F || p.role === R.HAND_B || p.role === R.FOOT_F || p.role === R.FOOT_B));
+        if (cand.length) pick(cand).impulse(rand(-90, 90), rand(-120, 20));
+      }
+    }
   }
 
   knock(stun) {
@@ -82,14 +127,29 @@ class NPC {
 
   // Fatal areas: brain = instant, heart = fast bleed-out, spine = paralysed,
   // arteries (neck, thigh) = heavy bleeding.
-  applyZones(mask, cause, x, y) {
+  applyZones(mask, cause, x, y, brainCount) {
     if (!mask || !this.alive) return;
     const g = this.game;
     this.lastHitBy = cause;
     const label = (t, c) => { if (!this.zoneShown.has(t)) { this.zoneShown.add(t); g.fx.text(x, y - 16, t, c); } };
     if (mask & (1 << Z_BRAIN)) {
+      // A graze (a few brain pixels) is sometimes survivable: dazed and stumbling.
+      this.brainLost += brainCount != null ? brainCount : Math.max(1, this.rag.zoneCount[Z_BRAIN]);
+      const minor = this.brainLost <= 3;
+      if (!this.brainRolled) { this.brainRolled = true; this.brainSurvives = minor && Math.random() < 0.35; }
+      if (this.brainSurvives && minor) {
+        label('HEAD WOUND', '#ffcf6a');
+        this.bleedRate += 3;
+        this.damage(25, cause);
+        if (this.alive && !this.downed && (!this.react || this.react.kind !== 'dazed')) {
+          this.react = { kind: 'dazed', t: rand(7, 12), wander: this.facing, turnT: 1 };
+          this.knock(1.2);
+          this.say(pick(DAZED_LINES), 2);
+        }
+        return;
+      }
       label('HEADSHOT', '#ff4050');
-      this.die(cause);
+      this.die(cause, 'rigid');
       return;
     }
     if (mask & (1 << Z_HEART)) {
@@ -106,13 +166,35 @@ class NPC {
       label('ARTERY', '#ff7a7a');
       this.bleedRate += 9;
     }
+    if ((mask & (1 << Z_NECK)) && this.alive) {
+      label('THROAT', '#ff7a7a');
+      this.bleedRate += 14;
+      // Sometimes they stay on their feet clutching their throat until they drop.
+      if (!this.downed && Math.random() < 0.5 && (!this.react || this.react.kind !== 'clutch')) {
+        this.react = { kind: 'clutch', t: rand(3, 6), wander: this.facing, turnT: 0.8 };
+        this.say(pick(CLUTCH_LINES), 2);
+      }
+      for (const q of this.rag.pieces) if (q.name === 'head' && this.main.has(q.a)) q.bleed = 1;
+    }
   }
 
   goDown() {
-    if (!this.alive) return;
+    if (!this.alive || this.downed) return;
     this.downed = true;
+    this.react = null;
+    this.crawling = Math.random() < 0.45;
     this.knock(2);
     if (!this.bubble) this.say(pick(DOWNED_LINES), 2);
+  }
+
+  // Euphoria-lite hit reaction: stumble with the hit, lean, windmill; big hits floor them.
+  hitReact(dx, dy, strength) {
+    if (!this.alive || this.downed || this.drive < 0.5 || this.stun > 0) return;
+    if (this.react && this.react.kind === 'stagger') { this.react.t += 0.2; this.react.v += sign(dx) * strength * 60; return; }
+    this.react = {
+      kind: 'stagger', t: Math.min(1.1, 0.4 + strength * 0.35), v: sign(dx) * (60 + strength * 140),
+      fall: Math.min(0.65, strength * 0.28), prev: this.react,
+    };
   }
 
   // Slammed into something hard (thrown, rammed, fell).
@@ -131,7 +213,7 @@ class NPC {
       const q = this.rag.pieces.find((q) => q.a === p || q.b === p);
       if (q) {
         const [gi, gj] = q.toGrid(p.x, p.y, q.frame());
-        this.rag.zoneHits = 0;
+        this.rag.resetZones();
         this.rag.burn(q, gi, gj, 1.6, 0.6, 0.1);
         this.applyZones(this.rag.zoneHits, 'slam', p.x, p.y);
       }
@@ -153,12 +235,16 @@ class NPC {
       const [x, y] = piece.cellWorld(idx, F);
       // The spike tears through a small area: any vital zone there counts.
       const [hgi, hgj] = piece.toGrid(x, y, F);
-      let mask = 0;
+      let mask = 0, brain = 0;
       for (let j = Math.floor(hgj - 1.5); j <= hgj + 1.5; j++)
-        for (let i = Math.floor(hgi - 1.5); i <= hgi + 1.5; i++)
-          if (i >= 0 && j >= 0 && i < piece.w && j < piece.h && piece.col[j * piece.w + i] && piece.zone[j * piece.w + i]) mask |= 1 << piece.zone[j * piece.w + i];
+        for (let i = Math.floor(hgi - 1.5); i <= hgi + 1.5; i++) {
+          if (i < 0 || j < 0 || i >= piece.w || j >= piece.h) continue;
+          const z = piece.col[j * piece.w + i] ? piece.zone[j * piece.w + i] : 0;
+          if (z) mask |= 1 << z;
+          if (z === Z_BRAIN) brain++;
+        }
       this.addBleed(piece.exposeNear(x, y, 1.3));
-      this.applyZones(mask, 'harpoon', x, y);
+      this.applyZones(mask, 'harpoon', x, y, brain);
       // Splash the surrounding pixels with blood.
       const [gi, gj] = piece.toGrid(x, y, F);
       for (let k = 0; k < 10; k++) {
@@ -184,12 +270,23 @@ class NPC {
       g.shake(2);
       Sfx.rip();
     }
-    if (!this.main.has(r.head)) { this.die(this.lastHitBy || kind); return; }
-    if (!this.main.has(r.pelvis) || !this.main.has(r.joint[R.NECK])) { this.die(this.lastHitBy || kind); return; }
+    if (!this.main.has(r.head) || !this.main.has(r.pelvis) || !this.main.has(r.joint[R.NECK])) {
+      this.die(this.lastHitBy || kind, 'headless');
+      return;
+    }
     if (lost && this.alive) {
       this.damage(25, this.lastHitBy || kind);
-      this.knock(4);
-      if (this.alive) this.say('AAAAAAAAH!', 1.5);
+      this.knock(3);
+      if (!this.legsIntact() && !this.legsLost && this.alive) {
+        // Lost a leg: crawl away, lie there, or go into shock and bleed out.
+        this.legsLost = true;
+        this.downed = true;
+        this.react = null;
+        const roll = Math.random();
+        this.crawling = roll < 0.5;
+        if (roll > 0.78) { this.bleedRate += 10; this.say('...', 1.5); }
+        else this.say(pick(LEGLESS_LINES), 2);
+      } else if (this.alive) this.say('AAAAAAAAH!', 1.5);
     }
   }
 
@@ -215,7 +312,7 @@ class NPC {
     this.impactT -= dt;
     if (this.bubble && (this.bubble.t -= dt) <= 0) this.bubble = null;
     const r = this.rag;
-    if (!this.alive) return;
+    if (!this.alive) { this.updateDead(dt); return; }
     // Downed from wounds = bleeding out; a pure spine injury just paralyses.
     if (this.downed && this.hp < this.maxHp * 0.25) this.bleedRate = Math.max(this.bleedRate, 1.8);
     if (this.bleedRate > 0) {
@@ -231,10 +328,13 @@ class NPC {
     const pinned = r.parts.some((p) => p.pin && this.main.has(p));
     if (pinned) { this.drive = 0; this.struggle(this.downed ? dt * 0.3 : dt); return; }
     const held = r.parts.some((p) => p.held && this.main.has(p));
-    if (this.stun > 0 || this.grabbed || held || this.downed || !this.legsIntact()) {
+    if (this.stun > 0 || this.grabbed || held) {
       this.drive = 0;
       if (this.grabbed || held) this.struggle(dt * 0.5);
-      else if (this.downed) this.writhe(dt);
+      return;
+    }
+    if (this.downed || !this.legsIntact()) {
+      if (this.crawling) this.crawl(dt); else { this.drive = 0; this.writhe(dt); }
       return;
     }
 
@@ -251,9 +351,11 @@ class NPC {
     }
     this.drive = Math.min(1, this.drive + dt * 0.9);
 
-    if (this.type === 'scientist') this.thinkScientist(dt);
+    if (this.react) this.updateReact(dt);
+    else if (this.type === 'scientist') this.thinkScientist(dt);
     else if (this.type === 'soldier') this.thinkSoldier(dt);
     else this.thinkGuard(dt);
+    if (!this.alive || this.stun > 0) return;
 
     this.moveRoot(dt);
     this.poseDrive(this.pose());
@@ -262,6 +364,70 @@ class NPC {
     const tx = this.rootX, ty = this.groundY + RAG_REST[R.PELVIS][1];
     if (this.drive > 0.5 && dist(pel.x, pel.y, tx, ty) > 42) this.knock(1.5);
     r.flip = this.facing;
+  }
+
+  updateReact(dt) {
+    const re = this.react;
+    re.t -= dt;
+    this.speed = 0;
+    if (re.kind === 'stagger') {
+      // Stumble in the direction of the hit; the root is moved directly.
+      if (this.pathClear(sign(re.v))) this.rootX += re.v * dt;
+      re.v *= Math.exp(-dt * 4);
+      this.drive = Math.min(this.drive, 0.75);
+      if (re.t <= 0) {
+        this.react = re.prev && re.prev.t > 0 ? re.prev : null;
+        if (Math.random() < re.fall) this.knock(rand(1.2, 2));
+      }
+      return;
+    }
+    // Clutching throat / dazed: aimless shuffling.
+    re.turnT -= dt;
+    if (re.turnT <= 0) { re.turnT = rand(0.6, 1.8); re.wander = Math.random() < 0.5 ? -1 : 1; }
+    this.facing = re.wander;
+    this.speed = re.kind === 'clutch' ? 22 : 30;
+    this.drive = Math.min(this.drive, re.kind === 'dazed' ? 0.6 : 0.7);
+    if (re.kind === 'dazed' && Math.random() < dt * 0.25) { this.knock(rand(1, 2)); return; }
+    if (re.kind === 'dazed' && Math.random() < dt * 0.15 && !this.bubble) this.say(pick(DAZED_LINES), 2);
+    if (re.t <= 0) {
+      this.react = null;
+      if (re.kind === 'clutch') this.goDown();
+      else if (this.type === 'scientist') this.mode = 'patrol';
+    }
+  }
+
+  // Legless or badly hurt: drag the body along the floor with the arms.
+  crawl(dt) {
+    const pel = this.rag.pelvis;
+    if (this.drive <= 0) {
+      const g = this.game.map.groundBelow(pel.x, pel.y - 4, 150);
+      if (g === null) return;
+      this.rootX = pel.x; this.groundY = g;
+      this.drive = 0.001;
+    }
+    const pl = this.game.player;
+    this.facing = pl.x < this.rootX ? 1 : -1;       // away from the monster
+    this.drive = Math.min(0.55, this.drive + dt * 0.5);
+    const ph = this.t * 3;
+    const pull = Math.max(0, -Math.sin(ph));
+    const ax = this.rootX + this.facing * 26;
+    if (!this.game.map.solidPx(ax, this.groundY - 10)) this.rootX += this.facing * 20 * pull * dt;
+    const g = this.game.map.groundBelow(this.rootX, this.groundY - 24, 60);
+    if (g !== null) this.groundY = g;
+    if (Math.random() < dt * 0.12 && !this.bubble) this.say(pick(this.legsLost ? LEGLESS_LINES : DOWNED_LINES), 2);
+    this.poseDrive(this.crawlPose(ph), 0.6);
+    this.rag.flip = this.facing;
+  }
+
+  crawlPose(ph) {
+    const P = REST_ART.map((o) => [o[0], o[1]]);
+    P[R.PELVIS] = [-6, -3.5]; P[R.NECK] = [6, -5]; P[R.HEAD] = [11, -8];
+    const s = Math.sin(ph), c = Math.cos(ph);
+    P[R.ELBOW_F] = [9.5 + s, -4.5]; P[R.HAND_F] = [13 + 3 * s, -1.5 - Math.max(0, c) * 2.5];
+    P[R.ELBOW_B] = [9.5 - s, -4.5]; P[R.HAND_B] = [13 - 3 * s, -1.5 - Math.max(0, -c) * 2.5];
+    P[R.KNEE_F] = [-13, -3]; P[R.FOOT_F] = [-20, -2];
+    P[R.KNEE_B] = [-13, -2.5]; P[R.FOOT_B] = [-20, -1.5];
+    return P;
   }
 
   thinkGuard(dt) {
@@ -350,10 +516,11 @@ class NPC {
     if (g !== null) this.groundY = g;
   }
 
-  // Target pose in art pixels, facing right.
-  pose() {
+  // Target pose in art pixels, facing right. dying = progress 0..1 of a death.
+  pose(dying) {
     const P = REST_ART.map((o) => [o[0], o[1]]);
     const t = this.t;
+    if (dying != null) return this.dyingPose(P, dying);
     P[R.HEAD][0] += Math.sin(t * 1.3) * 0.4;
     P[R.HEAD][1] += Math.sin(t * 2.1) * 0.3;
     if (this.speed > 0) {
@@ -398,14 +565,61 @@ class NPC {
       P[R.ELBOW_F] = [5.5, -24]; P[R.HAND_F] = [5, -30];
       P[R.ELBOW_B] = [4, -25]; P[R.HAND_B] = [2, -31];
     }
+    const re = this.react;
+    if (re && re.kind === 'stagger') {
+      // Upper body thrown with the hit, arms windmilling for balance.
+      const lean = sign(re.v) * this.facing * Math.min(1, Math.abs(re.v) / 150);
+      P[R.NECK][0] += lean * 2.5; P[R.HEAD][0] += lean * 4; P[R.HEAD][1] += 0.5;
+      const w = t * 14;
+      P[R.ELBOW_F] = [3 - lean * 2, -30]; P[R.HAND_F] = [4 + Math.cos(w) * 3, -34 + Math.sin(w) * 3];
+      P[R.ELBOW_B] = [-3 - lean * 2, -29]; P[R.HAND_B] = [-4 - Math.cos(w) * 3, -33 - Math.sin(w) * 3];
+      P[R.KNEE_F][0] += lean; P[R.PELVIS][1] += 1;
+    } else if (re && re.kind === 'clutch') {
+      P[R.ELBOW_F] = [4, -26]; P[R.HAND_F] = [2.5, -31];
+      P[R.ELBOW_B] = [3, -25.5]; P[R.HAND_B] = [1.5, -30.5];
+      P[R.NECK][0] += 1.5; P[R.HEAD] = [3 + Math.sin(t * 9) * 0.6, -35.5];
+      P[R.PELVIS][1] += 1; P[R.KNEE_F][0] += 1;
+    } else if (re && re.kind === 'dazed') {
+      const l = Math.sin(t * 1.7);
+      P[R.NECK][0] += l * 1.2; P[R.HEAD][0] += l * 2.8; P[R.HEAD][1] += 1 + Math.abs(l);
+      P[R.HAND_F][0] += 2 + Math.sin(t * 2.3) * 1.5; P[R.HAND_B][0] -= 2;
+      P[R.PELVIS][1] += 0.8 + Math.sin(t * 3.1) * 0.5;
+    }
     if (this.flinch > 0) for (const p of P) { p[0] += rand(-0.3, 0.3) * this.flinch; p[1] += rand(-0.3, 0.3) * this.flinch; }
     return P;
   }
 
-  poseDrive(P) {
-    const k = 0.2 * this.drive * (1 - this.flinch * 0.6);
+  dyingPose(P, f) {
+    const e = f * f;
+    const st = this.dyingStyle;
+    if (st === 'buckle' || st === 'headless') {
+      P[R.PELVIS] = [1.5 * e, -19 + 10 * e]; P[R.KNEE_F] = [4 * e + 1.5, -10.5 + 5 * e]; P[R.KNEE_B] = [3 * e - 1.5, -10.5 + 5 * e];
+      P[R.NECK] = [3 * e, -31 + 12 * e]; P[R.HEAD] = [6 * e, -37 + 14 * e];
+      P[R.ELBOW_F] = [3 * e, -24 + 10 * e]; P[R.HAND_F] = [4 * e, -18 + 12 * e];
+      if (st === 'headless') { P[R.HAND_F] = [2 + Math.sin(this.t * 20) * 2, -30]; P[R.HAND_B] = [-2, -29 + Math.cos(this.t * 17) * 2]; }
+    } else if (st === 'clutch') {
+      P[R.PELVIS] = [0, -19 + 8 * e]; P[R.KNEE_F] = [3 * e + 1.5, -10.5 + 4 * e]; P[R.KNEE_B] = [2 * e - 1.5, -10.5 + 4 * e];
+      P[R.NECK] = [2 * e, -31 + 9 * e]; P[R.HEAD] = [4 * e, -37 + 10 * e];
+      P[R.ELBOW_F] = [4, -24 + 8 * e]; P[R.HAND_F] = [2, -26 + 8 * e];
+      P[R.ELBOW_B] = [3, -23 + 8 * e]; P[R.HAND_B] = [1.5, -25.5 + 8 * e];
+    } else if (st === 'back') {
+      P[R.PELVIS] = [-2 * e, -19 + 4 * e]; P[R.NECK] = [-6 * e, -31 + 5 * e]; P[R.HEAD] = [-9 * e, -37 + 5 * e];
+      P[R.ELBOW_F] = [2, -32]; P[R.HAND_F] = [4, -37 + 3 * e];
+      P[R.ELBOW_B] = [-3, -31]; P[R.HAND_B] = [-5, -36 + 3 * e];
+    } else {
+      // rigid: locked up, head snapped back.
+      P[R.HEAD][0] -= 2; P[R.NECK][0] -= 0.5;
+      P[R.HAND_F] = [4, -22]; P[R.HAND_B] = [-3, -22];
+    }
+    return P;
+  }
+
+  poseDrive(P, kScale = 1) {
+    const k = 0.2 * kScale * this.drive * (1 - this.flinch * 0.6);
+    const skipLegs = this.paralysed || this.legsLost;
     for (const p of this.rag.parts) {
       if (p.role < 0 || p.pin || p.held || !this.main.has(p)) continue;
+      if (skipLegs && this.crawling && p.role >= R.KNEE_B) continue;
       const o = P[p.role];
       const tx = this.rootX + o[0] * PX * this.facing, ty = this.groundY + o[1] * PX;
       const dx = (tx - p.x) * k, dy = (ty - p.y) * k;

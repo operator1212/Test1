@@ -326,9 +326,11 @@ class Tentacle {
 // Used by soldiers (at you) and the shotgun (pellets). Each one punches a
 // small hole through the pixels it hits.
 class Bullet {
-  constructor(x, y, vx, vy, from, dmg, cause, shooter) {
+  // range > 0 = damage/size/knockback fall off with distance (shotgun pellets).
+  constructor(x, y, vx, vy, from, dmg, cause, shooter, range = 0) {
     this.x = x; this.y = y; this.vx = vx; this.vy = vy;
     this.from = from; this.dmg = dmg; this.cause = cause;
+    this.range = range; this.traveled = 0;
     this.exclude = shooter ? new Set([shooter]) : null;
     this.life = 1.2;
     this.state = 'fly';
@@ -343,6 +345,9 @@ class Bullet {
     let rem = sp * dt;
     while (rem > 0) {
       const st = Math.min(6, rem); rem -= st;
+      this.traveled += st;
+      if (this.range && this.traveled > this.range * 1.3) { this.state = 'dead'; return; }
+      const f = this.range ? clamp(1 - this.traveled / this.range, 0.1, 1) : 1;
       const nx = this.x + dx * st, ny = this.y + dy * st;
       if (game.map.solidPx(nx, ny)) {
         game.fx.sparks(this.x, this.y, -dx, -dy, 3, 250);
@@ -351,13 +356,14 @@ class Bullet {
         return;
       }
       if (this.from === 'npc' && game.player.hitTest(nx, ny)) {
-        game.player.hurt(this.dmg, dx, dy, nx, ny);
+        game.player.hurt(this.dmg * f, dx, dy, nx, ny);
         this.state = 'dead';
         return;
       }
       const h = game.hitPieces(this.x, this.y, nx, ny, this.exclude, 0);
       if (h) {
-        game.woundAt(h, { radius: 1.1, drill: 2.2, dx, dy, dmg: this.dmg, cause: this.cause, push: 170, stun: 0.6 });
+        const close = f > 0.45;
+        game.woundAt(h, { radius: close ? 1.1 : 0.5, drill: close ? 2.2 : 0, dx, dy, dmg: this.dmg * f, cause: this.cause, push: 60 + 160 * f });
         this.state = 'dead';
         return;
       }
@@ -376,16 +382,24 @@ class Bullet {
 class Saw {
   constructor(x, y, vx, vy) {
     this.x = x; this.y = y; this.vx = vx; this.vy = vy;
-    this.bounces = 5;
+    this.bounces = 3;
     this.state = 'fly';          // fly | stuck | dead
     this.spin = 0;
     this.life = 5;
-    this.r = 3.3;                // cutting radius in art px
+    this.r = 2.3;                // cutting radius in art px
+    this.host = null;
   }
 
   update(dt, game) {
     this.life -= dt;
     if (this.life <= 0) { this.state = 'dead'; return; }
+    if (this.state === 'lodged') {
+      const h = this.host;
+      if (!h.rag || !h.rag.parts.includes(h)) { this.state = 'dead'; return; }
+      this.x = h.x + this.ox; this.y = h.y + this.oy;
+      this.spin += dt * 40 * Math.max(0, this.life - 4.5);
+      return;
+    }
     if (this.state !== 'fly') return;
     this.spin += dt * 40;
     this.vy += 260 * dt;
@@ -412,7 +426,7 @@ class Saw {
       this.x = nx; this.y = ny;
     }
     // Cut everything we overlap.
-    let cutting = false;
+    let cutting = false, lastPiece = null;
     for (const npc of game.npcs) {
       const rag = npc.rag;
       for (const q of rag.pieces.slice()) {
@@ -421,20 +435,34 @@ class Saw {
         const [gi, gj] = q.toGrid(this.x, this.y, q.frame());
         if (gi < -this.r || gj < -this.r || gi > q.w + this.r || gj > q.h + this.r) continue;
         const living = npc.alive && npc.main.has(q.a);
-        rag.zoneHits = 0;
-        const removed = rag.burn(q, gi, gj, this.r, 1, 0.2);
+        rag.resetZones();
+        // Chews through gradually rather than deleting everything it touches.
+        const removed = rag.burn(q, gi, gj, this.r, 0.3, 0.2);
         if (!removed) continue;
         cutting = true;
+        lastPiece = q;
+        // Every pixel cut costs momentum.
+        const k = Math.pow(0.97, removed);
+        this.vx *= k; this.vy *= k;
         if (living) {
           npc.addBleed(removed);
-          npc.damage(removed * 1.2, 'saw');
-          npc.knock(1);
+          npc.damage(removed * 0.9, 'saw');
+          npc.hitReact(this.vx, this.vy, 1.2);
           npc.applyZones(rag.zoneHits, 'saw', this.x, this.y);
         }
         game.blood.spray(this.x, this.y, -this.vy, this.vx, removed * 2, 380, 0.5);
       }
     }
-    if (cutting) { this.vx *= 0.97; this.vy *= 0.97; if (Math.random() < 0.3) Sfx.grind(); }
+    if (cutting) {
+      if (Math.random() < 0.3) Sfx.grind();
+      // Too slow to keep going: the blade sticks in the body.
+      if (Math.hypot(this.vx, this.vy) < 300 && lastPiece) {
+        const q = lastPiece;
+        this.host = dist2(this.x, this.y, q.a.x, q.a.y) < dist2(this.x, this.y, q.b.x, q.b.y) ? q.a : q.b;
+        this.ox = this.x - this.host.x; this.oy = this.y - this.host.y;
+        this.state = 'lodged'; this.life = 6;
+      }
+    }
   }
 
   render(fb) {

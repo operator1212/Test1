@@ -238,7 +238,7 @@ class Game {
     const npc = h.npc, rag = npc.rag, q = h.piece;
     const F = q.frame();
     const [gi, gj] = q.toGrid(h.x + o.dx * PX * 0.4, h.y + o.dy * PX * 0.4, F);
-    rag.zoneHits = 0;
+    rag.resetZones();
     let removed = rag.burn(q, gi, gj, o.radius, 1, 0.25);
     if (o.drill && rag.pieces.includes(q)) {
       const [di, dj] = q.toGrid(h.x + o.dx * PX * o.drill, h.y + o.dy * PX * o.drill, F);
@@ -252,8 +252,8 @@ class Game {
       npc.addBleed(removed);
       npc.damage(o.dmg, o.cause);
       npc.flinch = 1;
-      if (o.stun && Math.random() < 0.4) npc.knock(o.stun);
       npc.applyZones(rag.zoneHits, o.cause, h.x, h.y);
+      npc.hitReact(o.dx, o.dy, o.dmg / 8);
     }
     return removed;
   }
@@ -270,7 +270,7 @@ class Game {
     }
     for (const npc of this.npcs) {
       const rag = npc.rag;
-      rag.zoneHits = 0;
+      rag.resetZones();
       let removed = 0;
       for (const q of rag.pieces.slice()) {
         if (!rag.pieces.includes(q)) continue;
@@ -352,7 +352,7 @@ class Game {
       h.particle.impulse(a.x * 25, a.y * 25);
       const living = npc.alive && npc.main.has(h.particle);
       if (living) { npc.flinch = Math.max(npc.flinch, 0.5); npc.lastHitBy = 'laser'; }
-      npc.rag.zoneHits = 0;
+      npc.rag.resetZones();
       // Burn at the entry pixel and drill a little deeper along the beam.
       const [di, dj] = q.toGrid(h.x + a.x * PX * 1.8, h.y + a.y * PX * 1.8, F);
       let removed = npc.rag.burn(q, gi, gj, 1.5, Math.min(1, dt * 45), 0.45);

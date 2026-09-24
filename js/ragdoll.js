@@ -58,7 +58,7 @@ const STYLES = {
 };
 
 // Vital zones baked into every pixel.
-const Z_BRAIN = 1, Z_HEART = 2, Z_SPINE = 3, Z_ARTERY = 4;
+const Z_BRAIN = 1, Z_HEART = 2, Z_SPINE = 3, Z_ARTERY = 4, Z_NECK = 5;
 
 function zoneOf(kind, u, v, len) {
   const av = Math.abs(v);
@@ -66,7 +66,7 @@ function zoneOf(kind, u, v, len) {
     case 'head': {
       const d = Math.hypot(u - len, v);
       if (d < 4.2) return Z_BRAIN;
-      if (u < len - 4 && av < 1.7) return Z_ARTERY;   // neck
+      if (u < len - 4 && av < 1.7) return Z_NECK;
       return 0;
     }
     case 'torso':
@@ -401,6 +401,7 @@ class Ragdoll {
     this.damp = 0.995;
     this.t = 0;
     this.zoneHits = 0;
+    this.zoneCount = new Uint16Array(6);
     this.onImpact = null;
   }
 
@@ -479,6 +480,8 @@ class Ragdoll {
     this.refreshTopology('tear', a.x, a.y);
   }
 
+  resetZones() { this.zoneHits = 0; this.zoneCount.fill(0); }
+
   // Burn pixels away around grid cell (gi, gj). Returns number removed.
   // Vital zones touched are OR'ed into this.zoneHits for the caller.
   burn(piece, gi, gj, radius, prob, char) {
@@ -505,7 +508,7 @@ class Ragdoll {
       }
     piece.count -= removed.length;
     for (const idx of removed) {
-      if (piece.zone[idx]) this.zoneHits |= 1 << piece.zone[idx];
+      if (piece.zone[idx]) { this.zoneHits |= 1 << piece.zone[idx]; this.zoneCount[piece.zone[idx]]++; }
       const i = idx % w, j = (idx / w) | 0;
       if (i > 0) piece.expose(idx - 1, char);
       if (i < w - 1) piece.expose(idx + 1, char);
