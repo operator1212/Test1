@@ -117,9 +117,12 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
       fly at half speed while doing it.
     - **Fragile:** 70 HP and it takes 1.3x damage.
     - **Guns:** hang from a nerve under the eye.
-  - **Slime:** a real particle fluid (about 90 particles with pressure and cohesion).
-    - **Solid:** the particles are pulled toward a core that crawls like the other creatures,
-      so the blob wobbles, sags and now and then drips.
+  - **Slime:** a real particle fluid (130 particles), drawn as metaballs so it has one smooth,
+    gooey outline.
+    - **Solid (shape matching):** every particle springs toward its own home spot in a soft
+      oval that sits on whatever surface the crawling core is on. So the blob wobbles, leans
+      onto walls, squashes flat in low gaps and drips from its underside, but it can't boil
+      apart. Victims are folded up inside the oval, blurred behind the goo.
     - **Engulf and dissolve:** roll onto someone to engulf them. They float inside the goo,
       still kicking. Hold LMB to dissolve them pixel by pixel, which is slow and pins you
       down. If you don't finish them they'll struggle free, and E spits them out.

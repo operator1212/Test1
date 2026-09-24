@@ -251,33 +251,37 @@ class Eye extends Player {
 }
 
 // ================================================================== SLIME
-// A blob of fluid particles. Solid: they're pulled toward the core (which
-// crawls like every other creature) and cling to each other, so it wobbles,
-// sags and drips. Liquid: the pull is gone and cohesion is weak, so it spreads
-// into a puddle that flows along the floor and pours off ledges.
+// A blob of fluid particles. Solid: shape matching. Every particle springs
+// toward its own home spot in a soft oval that sits on whatever surface the
+// core (which crawls like every other creature) is on, so the blob wobbles,
+// squashes into gaps, sags and drips, but can't boil apart. Liquid: the homes
+// are gone and only weak cohesion is left, so it spreads into a puddle that
+// flows along the floor and pours off ledges.
 const DISSOLVE = { name: 'DISSOLVE', cool: 0, kind: 'dissolve' };
 const SLIME_C = {
   fill: hexc('#5fd35a'), deep: hexc('#2f8f38'), rim: hexc('#1f6b2a'), hi: hexc('#d9ffc8'), eye: hexc('#0e2a10'),
   pool: hexc('#3e9c3f'), poolRim: hexc('#1d4f22'),
 };
-const SLIME_N = 90;                  // particles
+const SLIME_N = 130;                 // particles
 const SLIME_PR = 4.5;                // particle collision radius (world)
 const SLIME_REST = SLIME_PR * 1.7;   // preferred spacing
 const SLIME_CELL = 11;               // spatial hash cell
+const SLIME_RW = 38, SLIME_RH = 27;    // solid half-width / half-height (world)
+const SLIME_SOLID_REST = 5.2;        // particle spacing when solid (packed)
 
 class Slime extends Player {
   static creatureName = 'SLIME';
   static weaponList = [DISSOLVE, ...WEAPONS];
   static hasTentacle = false;
   static bleeds = false;
-  static rideH = 24;
+  static rideH = 33;
   static help = [['ROLL ONTO', 'ENGULF SOMEONE'], ['LMB HOLD', 'DISSOLVE THEM  (E SPITS OUT)'], ['RMB', 'MELT INTO A HIDDEN PUDDLE']];
 
   constructor(game, x, feetY) {
     super(game, x, feetY);
     this.maxHp = 130; this.hp = 130;
     this.moveSpeed = 210;
-    this.coreR = 12;
+    this.coreR = 14;
     this.liquid = false;
     this.hidden = false;
     this.toggleCool = 0;
@@ -285,21 +289,24 @@ class Slime extends Player {
     this.dissolveT = 0;
     this.dripT = 0;
     this.flowX = 0;
+    this.formK = 1;              // 0..1 ramp of the shape spring after re-forming
+    this.shape = { t: { x: 1, y: 0 }, u: { x: 0, y: -1 }, rw: SLIME_RW, above: SLIME_RH, below: SLIME_RH };
     this.spawnGoo();
   }
 
   spawnGoo() {
     this.goo = [];
-    const Rb = Math.sqrt(SLIME_N) * SLIME_REST * 0.5;
     for (let i = 0; i < SLIME_N; i++) {
-      const r = Math.sqrt((i + 0.5) / SLIME_N) * Rb, a = i * 2.39996;
-      const x = this.x + Math.cos(a) * r, y = this.y + Math.sin(a) * r;
-      this.goo.push({ x, y, px: x, py: y, ground: false, free: 0, bub: Math.random() < 0.06 });
+      // Home spot: a sunflower pattern over the unit disc (ry > 0 is up).
+      const r = Math.sqrt((i + 0.5) / SLIME_N) * 0.94, a = i * 2.39996;
+      const rx = Math.cos(a) * r, ry = Math.sin(a) * r;
+      const x = this.x + rx * SLIME_RW, y = this.y - ry * SLIME_RH;
+      this.goo.push({ x, y, px: x, py: y, rx, ry, ground: false, free: 0, bub: Math.random() < 0.05 });
     }
   }
 
   rmbLabel() { return this.liquid ? 'HIDDEN - RMB' : 'RMB MELT'; }
-  blobR() { return Math.sqrt(SLIME_N) * SLIME_REST * 0.5; }
+  blobR() { return SLIME_RW; }
   centroid() {
     let x = 0, y = 0;
     for (const p of this.goo) { x += p.x; y += p.y; }
@@ -362,12 +369,17 @@ class Slime extends Player {
       this.release(false);
       this.game.fx.text(this.x, this.y - 30, 'MELT', '#9be89a');
     } else {
-      // Pull back together around the puddle's centre.
+      // Pull back together around the puddle's centre. Homes are handed out by
+      // angle so nobody has to cross the whole blob, and the spring ramps up.
       const c = this.centroid();
       const b = { x: c.x, y: c.y - 6, r: this.coreR };
       this.game.map.pushCircle(b);
       this.x = b.x; this.y = b.y; this.vx = this.vy = 0;
-      this.up = { x: 0, y: -1 };
+      this.up = { x: 0, y: -1 }; this.bodyUp = { x: 0, y: -1 };
+      const homes = this.goo.map((p) => ({ rx: p.rx, ry: p.ry })).sort((a, q) => Math.atan2(-a.ry, a.rx) - Math.atan2(-q.ry, q.rx));
+      const ps = this.goo.slice().sort((a, q) => Math.atan2(a.y - c.y, a.x - c.x) - Math.atan2(q.y - c.y, q.x - c.x));
+      ps.forEach((p, i) => { p.rx = homes[i].rx; p.ry = homes[i].ry; });
+      this.formK = 0;
     }
     Sfx.squelch();
   }
@@ -403,11 +415,14 @@ class Slime extends Player {
       const R = this.blobR() * 0.8;
       for (const npc of g.npcs) {
         if (!npc.rag.pieces.length || !npc.rag.parts.some((p) => npc.main.has(p) && !p.pin && dist2(p.x, p.y, this.x, this.y) < R * R)) continue;
-        const offs = new Map(), lim = this.blobR() * 0.45;
+        // The whole body (whatever is still attached) gets folded up inside
+        // the oval, keeping its layout roughly.
+        const offs = new Map();
         for (const p of npc.rag.parts) {
-          if (p.pin || dist2(p.x, p.y, this.x, this.y) > (this.blobR() * 1.6) ** 2) continue;
-          const d = dist(p.x, p.y, this.x, this.y) || 1, k = Math.min(1, lim / d) * 0.8;
-          offs.set(p, { ox: (p.x - this.x) * k, oy: (p.y - this.y) * k });
+          if (p.pin || !npc.main.has(p)) continue;
+          const dx = (p.x - this.x) / (SLIME_RW * 0.55), dy = (p.y - this.y) / (SLIME_RH * 0.5);
+          const k = 1 / Math.max(1, Math.hypot(dx, dy));
+          offs.set(p, { ox: dx * k * SLIME_RW * 0.55, oy: dy * k * SLIME_RH * 0.5 });
         }
         if (!offs.size) continue;
         this.victim = { npc, offs, esc: 0 };
@@ -463,43 +478,70 @@ class Slime extends Player {
     }
   }
 
+  // Where the solid blob's oval sits this tick: oriented to the surface,
+  // squashed flat by anything close above or below, widened to keep its size.
+  updateShape(dt) {
+    const map = this.game.map, S = this.shape;
+    const target = this.grip > 0.25 ? this.up : { x: 0, y: -1 };
+    const k = 1 - Math.exp(-dt * 10);
+    this.bodyUp = norm(lerp(this.bodyUp.x, target.x, k), lerp(this.bodyUp.y, target.y, k));
+    const u = this.bodyUp;
+    S.u = u; S.t = { x: -u.y, y: u.x };
+    const lim = SLIME_RH + SLIME_PR + 1;
+    const rd = map.raycast(this.x, this.y, -u.x, -u.y, lim), ru = map.raycast(this.x, this.y, u.x, u.y, lim);
+    const below = rd.hit ? clamp(rd.dist - SLIME_PR - 1, 5, SLIME_RH) : SLIME_RH;
+    const above = ru.hit ? clamp(ru.dist - SLIME_PR - 1, 5, SLIME_RH) : SLIME_RH;
+    const ks = 1 - Math.exp(-dt * 14);
+    S.below = lerp(S.below, below, ks); S.above = lerp(S.above, above, ks);
+    S.rw = SLIME_RW * Math.min(1.9, Math.sqrt(2 * SLIME_RH / (S.below + S.above)));
+  }
+
   // The fluid step (runs every tick).
   computePose(dt) {
     if (!this.goo || !dt) return;
     const map = this.game.map, goo = this.goo, liquid = this.liquid;
     const g2 = GRAVITY * dt * dt;
-    const pull = liquid ? 0 : 0.045, coh = liquid ? 0.045 : 0.1;
-    // Drip: now and then a low particle lets go for a moment.
+    if (!liquid) this.updateShape(dt);
+    this.formK = Math.min(1, this.formK + dt * 1.6);
+    const S = this.shape, kHome = lerp(0.015, 0.09, this.formK);
+    // Drip: now and then a particle on the underside lets go for a moment.
     this.dripT -= dt;
     if (!liquid && this.dripT <= 0) {
-      this.dripT = rand(0.25, 0.6);
+      this.dripT = rand(0.3, 0.8);
       const p = pick(goo);
-      if (p.y > this.y + this.blobR() * 0.3 && !p.ground) p.free = rand(0.5, 0.9);
+      if (p.ry < -0.55 && !p.ground) p.free = rand(0.5, 0.9);
     }
+    const damp = liquid ? 0.985 : 0.965;
     for (const p of goo) {
-      let vx = (p.x - p.px) * 0.985, vy = (p.y - p.py) * 0.985;
+      let vx = (p.x - p.px) * damp, vy = (p.y - p.py) * damp;
       if (p.ground) vx *= liquid ? 0.93 : 0.85;
       if (liquid && p.ground) vx += (this.flowX * 130 * dt - vx) * 0.12;
       p.px = p.x; p.py = p.y;
       p.x += vx; p.y += vy + g2;
       p.free -= dt;
-      // Liquid: only a gentle sideways pull keeps the puddle together.
-      if (liquid) p.x += (this.x - p.x) * 0.0025;
-      if (pull && p.free <= 0) {
-        const dx = this.x - p.x, dy = this.y - p.y, d = Math.hypot(dx, dy);
-        p.x += dx * pull; p.y += dy * pull;
-        // Stragglers stuck behind geometry seep back home.
-        p.lost = d > this.blobR() * 1.6 ? (p.lost || 0) + dt : 0;
-        if (p.lost > 0.8 || d > 250) { p.x = p.px = this.x + rand(-6, 6); p.y = p.py = this.y + rand(-6, 6); p.lost = 0; }
+      if (liquid) {
+        // Only a gentle sideways pull keeps the puddle together.
+        p.x += (this.x - p.x) * 0.0025;
+        continue;
       }
+      // Spring toward this particle's home spot in the oval.
+      const hy = p.ry > 0 ? p.ry * S.above : p.ry * S.below, hx = p.rx * S.rw;
+      const gx = this.x + S.t.x * hx + S.u.x * hy, gy = this.y + S.t.y * hx + S.u.y * hy;
+      const kk = p.free > 0 ? kHome * 0.08 : kHome;
+      p.x += (gx - p.x) * kk; p.y += (gy - p.y) * kk;
+      // Stragglers stuck behind geometry seep back home.
+      const d = Math.hypot(gx - p.x, gy - p.y);
+      p.lost = d > 40 && p.free <= 0 ? (p.lost || 0) + dt : 0;
+      if (p.lost > 0.6 || d > 250) { p.x = p.px = gx; p.y = p.py = gy; p.lost = 0; }
     }
-    // Pressure and cohesion between neighbours.
+    // Neighbours: pressure (and cohesion when liquid).
+    const rest = liquid ? SLIME_REST : SLIME_SOLID_REST, coh = liquid ? 0.045 : 0;
     const grid = new Map(), key = (i, j) => (i + 4096) * 8192 + (j + 4096);
     for (const p of goo) {
       const k = key(Math.floor(p.x / SLIME_CELL), Math.floor(p.y / SLIME_CELL));
       let b = grid.get(k); if (!b) grid.set(k, b = []); b.push(p);
     }
-    const R2 = SLIME_REST * 2;
+    const R2 = liquid ? rest * 2 : rest;
     for (const p of goo) {
       const gi = Math.floor(p.x / SLIME_CELL), gj = Math.floor(p.y / SLIME_CELL);
       for (let j = gj - 1; j <= gj + 1; j++) for (let i = gi - 1; i <= gi + 1; i++) {
@@ -511,7 +553,7 @@ class Slime extends Player {
           if (d2 > R2 * R2 || d2 < 1e-6) continue;
           const d = Math.sqrt(d2);
           const c = coh * (p.free > 0 || q.free > 0 ? 0.35 : 1);
-          const m = d < SLIME_REST ? (SLIME_REST - d) * 0.25 : -(d - SLIME_REST) * c * 0.5;
+          const m = d < rest ? (rest - d) * (liquid ? 0.25 : 0.15) : -(d - rest) * c * 0.5;
           const ux = dx / d * m, uy = dy / d * m;
           p.x -= ux; p.y -= uy; q.x += ux; q.y += uy;
         }
@@ -530,34 +572,51 @@ class Slime extends Player {
     if (this.dead) return;
     const liquid = this.liquid;
     if (!liquid && this.wkind() !== 'dissolve') this.renderGun(fb, this.gunHand());
-    // Rasterise the particles into a mask, then shade it as one body.
-    const rr = liquid ? 2.3 : 2.9;
+    // Metaballs: sum a smooth falloff from every particle and cut at a
+    // threshold, which gives one smooth, gooey outline.
+    const KR = liquid ? 3.4 : 3.2, KR2 = KR * KR, TH = 0.45;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const p of this.goo) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
-    const ax = Math.floor(x0 / PX - rr) - 1, ay = Math.floor(y0 / PX - rr) - 1;
-    const W = Math.ceil(x1 / PX + rr) + 2 - ax, H = Math.ceil(y1 / PX + rr) + 2 - ay;
+    const ax = Math.floor(x0 / PX - KR) - 1, ay = Math.floor(y0 / PX - KR) - 1;
+    const W = Math.ceil(x1 / PX + KR) + 2 - ax, H = Math.ceil(y1 / PX + KR) + 2 - ay;
     if (W > 600 || H > 600) return;
-    const mask = new Uint8Array(W * H), r2 = rr * rr;
+    const field = new Float32Array(W * H);
     for (const p of this.goo) {
       const cx = p.x / PX - ax, cy = p.y / PX - ay;
-      for (let y = Math.max(0, Math.floor(cy - rr)); y <= Math.min(H - 1, cy + rr); y++)
-        for (let x = Math.max(0, Math.floor(cx - rr)); x <= Math.min(W - 1, cx + rr); x++)
-          if ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r2) mask[y * W + x] = 1;
+      for (let y = Math.max(0, Math.floor(cy - KR)); y <= Math.min(H - 1, cy + KR); y++)
+        for (let x = Math.max(0, Math.floor(cx - KR)); x <= Math.min(W - 1, cx + KR); x++) {
+          const q = 1 - ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2) / KR2;
+          if (q > 0) field[y * W + x] += q * q;
+        }
     }
+    const inside = (x, y) => x >= 0 && y >= 0 && x < W && y < H && field[y * W + x] >= TH;
     const fill = liquid ? SLIME_C.pool : SLIME_C.fill, rim = liquid ? SLIME_C.poolRim : SLIME_C.rim;
-    const alpha = liquid ? 0.8 : 0.6, hurt = this.hurtT > 0;
+    const alpha = liquid ? 0.8 : 0.72, hurt = this.hurtT > 0;
+    const u = this.bodyUp;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      if (!mask[y * W + x]) continue;
-      const up = y > 0 && mask[(y - 1) * W + x], dn = y < H - 1 && mask[(y + 1) * W + x];
-      const lf = x > 0 && mask[y * W + x - 1], rt = x < W - 1 && mask[y * W + x + 1];
-      if (!up || !dn || !lf || !rt) fb.put(ax + x, ay + y, !up && !liquid && (y + ay) * PX < this.y ? SLIME_C.hi : rim);
-      else fb.blend(ax + x, ay + y, hurt ? HURT_TINT : (y > 1 && !mask[(y - 2) * W + x] ? SLIME_C.hi : fill), hurt ? 0.5 : alpha);
+      if (field[y * W + x] < TH) continue;
+      const X = ax + x, Y = ay + y;
+      if (!inside(x, y - 1) || !inside(x, y + 1) || !inside(x - 1, y) || !inside(x + 1, y)) {
+        // Outline: lit along the top, dark elsewhere.
+        const top = !liquid && !inside(x, y - 1) && ((X + 0.5) * PX - this.x) * u.x + ((Y + 0.5) * PX - this.y) * u.y > 0;
+        fb.put(X, Y, top ? SLIME_C.hi : rim);
+      } else {
+        // Darker toward the underside, like light passing through jelly.
+        const h = liquid ? 0 : (((X + 0.5) * PX - this.x) * u.x + ((Y + 0.5) * PX - this.y) * u.y) / SLIME_RH;
+        fb.blend(X, Y, hurt ? HURT_TINT : h < -0.35 ? SLIME_C.deep : fill, hurt ? 0.5 : alpha);
+      }
     }
-    for (const p of this.goo) if (p.bub && !liquid) fb.blend(p.x / PX, p.y / PX, SLIME_C.hi, 0.6);
-    if (!liquid) {
-      // Two beady eyes looking where you aim.
-      const ex = this.x / PX + this.aim.x * 4, ey = this.y / PX + this.aim.y * 3 - 3;
-      for (const s of [-1.5, 1.5]) { fb.put(ex + s, ey, SLIME_C.eye); fb.put(ex + s, ey - 1, SLIME_C.eye); }
+    if (liquid) return;
+    // Wet highlight and a few bubbles drifting in the goo.
+    const S = this.shape, cx = this.x / PX, cy = this.y / PX;
+    const hx = cx + (-S.t.x * S.rw * 0.4 + u.x * S.above * 0.5) / PX, hy = cy + (-S.t.y * S.rw * 0.4 + u.y * S.above * 0.5) / PX;
+    fb.blend(hx, hy, SLIME_C.hi, 0.9); fb.blend(hx + 1, hy, SLIME_C.hi, 0.7); fb.blend(hx, hy + 1, SLIME_C.hi, 0.5);
+    for (const p of this.goo) if (p.bub && p.ry > -0.6 && p.ry < 0.6) fb.blend(p.x / PX, p.y / PX, SLIME_C.hi, 0.45);
+    // Two beady eyes looking where you aim, on the upper half of the blob.
+    const ex = cx + this.aim.x * 3.5 + u.x * 2.5, ey = cy + this.aim.y * 2.5 + u.y * 2.5;
+    for (const sd of [-1.5, 1.5]) {
+      fb.put(ex + S.t.x * sd, ey + S.t.y * sd, SLIME_C.eye);
+      fb.put(ex + S.t.x * sd + u.x, ey + S.t.y * sd + u.y, SLIME_C.eye);
     }
   }
 }
