@@ -31,7 +31,7 @@ class Spike {
       const nx = this.x + dx * st, ny = this.y + dy * st;
       if (game.map.solidPx(nx, ny)) { this.embed(game, dx, dy); return; }
       if (this.carried.length < 3) {
-        const h = game.hitBones(this.x, this.y, nx, ny, 3, this.rags);
+        const h = game.hitPieces(this.x, this.y, nx, ny, this.rags, 0);
         if (h) this.impale(game, h, dx, dy);
       }
       this.x = nx; this.y = ny;
@@ -47,7 +47,7 @@ class Spike {
     this.carried.push(p);
     this.rags.add(p.rag);
     this.vx *= 0.72; this.vy *= 0.72;
-    h.npc.onImpaled(p, dx, dy);
+    h.npc.onImpaled(p, dx, dy, h.piece, h.idx);
     game.blood.spray(p.x, p.y, dx, dy, 22, 480, 0.35);
     game.blood.spray(p.x, p.y, -dx, -dy, 10, 220, 0.6);
     game.shake(4);
@@ -88,24 +88,23 @@ class Spike {
     this.carried = [];
   }
 
-  render(ctx) {
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.ang);
-    ctx.fillStyle = '#3d434d';
-    ctx.fillRect(-46, -2.5, 40, 5);
-    ctx.fillStyle = '#a9b2bf';
-    ctx.fillRect(-46, -2.5, 40, 1.5);
-    ctx.fillStyle = '#2a2e35';
-    ctx.fillRect(-48, -4, 5, 8);
-    ctx.fillStyle = '#d7dce4';
-    ctx.beginPath();
-    ctx.moveTo(2, 0); ctx.lineTo(-10, -6); ctx.lineTo(-7, 0); ctx.lineTo(-10, 6); ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = '#2a2e35'; ctx.lineWidth = 1; ctx.stroke();
-    ctx.restore();
+  render(fb) {
+    const dx = Math.cos(this.ang), dy = Math.sin(this.ang);
+    const tx = this.x / PX, ty = this.y / PX;
+    const bx = tx - dx * 17, by = ty - dy * 17;
+    const nx = -dy, ny = dx;
+    fb.line(bx + nx * 0.6, by + ny * 0.6, tx - dx * 3 + nx * 0.6, ty - dy * 3 + ny * 0.6, SPIKE_DARK);
+    fb.line(bx, by, tx - dx * 3, ty - dy * 3, SPIKE_LIGHT);
+    fb.line(tx - dx * 3, ty - dy * 3, tx, ty, SPIKE_TIP);
+    fb.put(tx - dx * 3 + nx * 1.6, ty - dy * 3 + ny * 1.6, SPIKE_TIP);
+    fb.put(tx - dx * 3 - nx * 1.6, ty - dy * 3 - ny * 1.6, SPIKE_TIP);
+    fb.put(bx + nx * 1.2, by + ny * 1.2, SPIKE_DARK);
+    fb.put(bx - nx * 1.2, by - ny * 1.2, SPIKE_DARK);
   }
 }
+
+const SPIKE_DARK = hexc('#2a2e35'), SPIKE_LIGHT = hexc('#8e98a6'), SPIKE_TIP = hexc('#e6ebf2');
+const TENT_OUT = hexc('#22030a'), TENT_MID = hexc('#7a1426'), TENT_HI = hexc('#c9495c'), TENT_CLAW = hexc('#efe3cf');
 
 class Tentacle {
   constructor(player) {
@@ -148,7 +147,7 @@ class Tentacle {
       const step = TENTACLE_SPEED * dt;
       const d = this.dir;
       const ray = game.map.raycast(this.tip.x, this.tip.y, d.x, d.y, step);
-      const h = game.hitBones(this.tip.x, this.tip.y, ray.x, ray.y, 5, null);
+      const h = game.hitPieces(this.tip.x, this.tip.y, ray.x, ray.y, null, 5);
       if (h) {
         this.target = h.particle; this.npc = h.npc;
         this.npc.grabbed = true; this.npc.knock(1);
@@ -204,43 +203,30 @@ class Tentacle {
     }
   }
 
-  render(ctx) {
+  render(fb) {
     if (this.state === 'idle') return;
     const o = this.origin();
     const tx = this.tip.x, ty = this.tip.y;
     const d = dist(o.x, o.y, tx, ty) || 1;
     const ux = (tx - o.x) / d, uy = (ty - o.y) / d;
     const nx = -uy, ny = ux;
-    const N = 20;
-    const amp = this.state === 'attached' ? 1.5 : 7;
+    const N = Math.max(4, Math.ceil(d / PX));
+    const amp = this.state === 'attached' ? 0.6 : 3;
     const slack = this.state === 'attached' ? Math.max(0, this.len - d) : 0;
     const pts = [];
     for (let i = 0; i <= N; i++) {
-      const f = i / N;
-      const env = Math.sin(Math.PI * f);
-      const w = Math.sin(f * 14 - this.t * 22) * amp * env;
-      pts.push({ x: o.x + ux * d * f + nx * w, y: o.y + uy * d * f + ny * w + slack * 0.6 * env });
+      const f = i / N, env = Math.sin(Math.PI * f);
+      const w = Math.sin(f * 14 - this.t * 22) * amp * env * PX;
+      pts.push([(o.x + ux * d * f + nx * w) / PX, (o.y + uy * d * f + ny * w + slack * 0.6 * env) / PX]);
     }
-    const layer = (col, scale) => {
-      ctx.strokeStyle = col; ctx.lineCap = 'round';
-      for (let i = 0; i < N; i++) {
-        ctx.lineWidth = lerp(9, 3.5, i / N) * scale;
-        ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[i + 1].x, pts[i + 1].y); ctx.stroke();
-      }
-    };
-    layer('#1f0208', 1.25);
-    layer('#6e1222', 1);
-    layer('#b83a4c', 0.35);
-    // Hooked bone claw on the tip.
-    const ang = Math.atan2(ty - pts[N - 1].y, tx - pts[N - 1].x);
-    ctx.save();
-    ctx.translate(tx, ty); ctx.rotate(ang);
-    ctx.fillStyle = '#efe3cf'; ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = 1;
-    for (const s of [-1, 1]) {
-      ctx.beginPath(); ctx.moveTo(-4, 0); ctx.quadraticCurveTo(4, s * 9, 9, s * 3); ctx.lineTo(3, s * 2); ctx.closePath();
-      ctx.fill(); ctx.stroke();
+    for (let i = 0; i <= N; i++) fb.disc(pts[i][0], pts[i][1], lerp(2.2, 1.3, i / N), TENT_OUT);
+    for (let i = 0; i <= N; i++) fb.disc(pts[i][0], pts[i][1], lerp(1.3, 0.7, i / N), TENT_MID);
+    for (let i = 0; i < N; i += 3) fb.put(pts[i][0] - 0.5, pts[i][1] - 0.5, TENT_HI);
+    // Bone hook on the tip.
+    const [ex, ey] = pts[N];
+    for (const sg of [-1, 1]) {
+      fb.put(ex + ux * 1 + nx * sg * 1.5, ey + uy * 1 + ny * sg * 1.5, TENT_CLAW);
+      fb.put(ex + ux * 2 + nx * sg * 1, ey + uy * 2 + ny * sg * 1, TENT_CLAW);
     }
-    ctx.restore();
-    ctx.lineCap = 'butt';
   }
 }

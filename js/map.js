@@ -1,7 +1,9 @@
 // Tile map: collision, ray casts and a pre-rendered static layer.
 'use strict';
 
-const TILE = 32;
+const TILE = 32;          // world units per tile (physics scale)
+const ART_TILE = 12;      // screen pixels per tile (art scale)
+const PX = TILE / ART_TILE;  // world units per art pixel
 
 // Legend:  # lab wall   = steel girder   P player   G guard dummy   S scientist
 const TEST_MAP = [
@@ -142,11 +144,13 @@ class TileMap {
   }
 
   // ---------------------------------------------------------------- rendering
+  // Everything below draws at art resolution (1 unit = 1 pixel).
   buildLayer() {
+    const A = ART_TILE;
     const c = document.createElement('canvas');
-    c.width = this.pw; c.height = this.ph;
+    c.width = this.w * A; c.height = this.h * A;
     const g = c.getContext('2d');
-    this._drawBackdrop(g);
+    this._drawBackdrop(g, c.width, c.height);
     for (let ty = 0; ty < this.h; ty++)
       for (let tx = 0; tx < this.w; tx++) {
         const t = this.tile(tx, ty);
@@ -157,52 +161,53 @@ class TileMap {
     this.layer = c;
   }
 
-  _drawBackdrop(g) {
-    const grad = g.createLinearGradient(0, 0, 0, this.ph);
-    grad.addColorStop(0, '#f3f6fb');
-    grad.addColorStop(1, '#d9e1ee');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, this.pw, this.ph);
-    // Wall panels.
-    g.strokeStyle = 'rgba(150,165,190,0.35)';
-    g.lineWidth = 2;
-    for (let x = 0; x < this.pw; x += 96) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, this.ph); g.stroke(); }
-    for (let y = 48; y < this.ph; y += 160) { g.beginPath(); g.moveTo(0, y); g.lineTo(this.pw, y); g.stroke(); }
-    // The blue trim stripes of a clean, early-2000s lab.
-    const stripe = (y, h, col) => { g.fillStyle = col; g.fillRect(0, y, this.pw, h); };
-    stripe(TILE * 16 + 6, 7, '#5f8ee6'); stripe(TILE * 16 + 15, 2, '#a9c1f0');
-    stripe(TILE * 7 + 4, 3, '#a9c1f0');
+  _drawBackdrop(g, W, H) {
+    const A = ART_TILE;
+    g.fillStyle = '#e4e9f1'; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#dce2eb'; g.fillRect(0, Math.floor(H * 0.55), W, H);
+    // Grime speckle.
+    g.fillStyle = '#d6dde8';
+    for (let i = 0; i < W * H / 60; i++) g.fillRect(randi(0, W), randi(0, H), 1, 1);
+    // Panels + rivets.
+    g.fillStyle = '#cdd5e1';
+    for (let x = 0; x < W; x += 36) g.fillRect(x, 0, 1, H);
+    for (let y = 18; y < H; y += 60) g.fillRect(0, y, W, 1);
+    g.fillStyle = '#b9c3d2';
+    for (let x = 0; x < W; x += 36) for (let y = 18; y < H; y += 60) { g.fillRect(x + 3, y + 3, 1, 1); g.fillRect(x + 32, y + 3, 1, 1); }
+    // Blue trim.
+    g.fillStyle = '#5f8ee6'; g.fillRect(0, 16 * A + 3, W, 2);
+    g.fillStyle = '#a9c1f0'; g.fillRect(0, 16 * A + 6, W, 1);
+    g.fillStyle = '#a9c1f0'; g.fillRect(0, 7 * A + 2, W, 1);
     // Observation windows.
-    const windows = [[8, 3, 6, 4], [24, 3, 8, 4], [56, 11, 4, 3], [68, 6, 8, 4]];
-    for (const [wx, wy, ww, wh] of windows) {
-      const x = wx * TILE, y = wy * TILE, w = ww * TILE, h = wh * TILE;
-      g.fillStyle = '#9fb0c8'; g.fillRect(x - 6, y - 6, w + 12, h + 12);
-      const wg = g.createLinearGradient(x, y, x + w, y + h);
-      wg.addColorStop(0, '#2d4468'); wg.addColorStop(0.5, '#4d6f9f'); wg.addColorStop(1, '#253a5a');
-      g.fillStyle = wg; g.fillRect(x, y, w, h);
-      g.fillStyle = 'rgba(255,255,255,0.18)';
-      g.beginPath(); g.moveTo(x + w * 0.15, y); g.lineTo(x + w * 0.35, y); g.lineTo(x + w * 0.1, y + h); g.lineTo(x - w * 0.1 + w * 0.0, y + h); g.closePath(); g.fill();
-      g.strokeStyle = '#7e8fa8'; g.lineWidth = 3;
-      for (let k = 1; k < ww / 2; k++) { g.beginPath(); g.moveTo(x + k * 64, y); g.lineTo(x + k * 64, y + h); g.stroke(); }
+    for (const [wx, wy, ww, wh] of [[8, 3, 6, 4], [24, 3, 8, 4], [56, 11, 4, 3], [68, 6, 8, 4]]) {
+      const x = wx * A, y = wy * A, w = ww * A, h = wh * A;
+      g.fillStyle = '#8e9fb8'; g.fillRect(x - 2, y - 2, w + 4, h + 4);
+      g.fillStyle = '#2c4468'; g.fillRect(x, y, w, h);
+      g.fillStyle = '#35517c'; g.fillRect(x, y + Math.floor(h / 2), w, Math.ceil(h / 2));
+      g.fillStyle = '#4d6f9f';
+      for (let k = 0; k < h; k++) { g.fillRect(x + 6 + k, y + h - 1 - k, 2, 1); g.fillRect(x + 12 + k, y + h - 1 - k, 1, 1); }
+      g.fillStyle = '#7e8fa8';
+      for (let k = 24; k < w; k += 24) g.fillRect(x + k, y, 1, h);
     }
-    // Signage.
-    g.font = 'bold 22px "Trebuchet MS", Verdana, sans-serif';
-    g.textBaseline = 'middle';
+    // Signs.
     const sign = (x, y, text, bg, fg) => {
-      const w = g.measureText(text).width + 24;
-      g.fillStyle = bg; g.fillRect(x, y, w, 34);
-      g.fillStyle = fg; g.fillText(text, x + 12, y + 18);
+      const w = textWidth(text) + 6;
+      g.fillStyle = shadeCss(bg); g.fillRect(x, y + 1, w, 9);
+      g.fillStyle = bg; g.fillRect(x, y, w, 9);
+      pixelText(g, text, x + 3, y + 2, fg);
     };
-    sign(3 * TILE, 9 * TILE, 'TEST CHAMBER 00', '#2f5fbf', '#ffffff');
-    sign(44 * TILE, 12 * TILE, 'CAUTION: SUBJECT 09 NOT CONTAINED', '#f2c230', '#1b1b1b');
-    sign(68 * TILE, 11 * TILE + 16, 'OBSERVATION', '#2f5fbf', '#ffffff');
-    // Biohazard-ish marks.
+    sign(3 * A, 9 * A, 'TEST CHAMBER 00', '#2f5fbf', '#ffffff');
+    sign(44 * A, 12 * A, 'CAUTION: SUBJECT 09 NOT CONTAINED', '#f2c230', '#1b1b1b');
+    sign(68 * A, 11 * A + 6, 'OBSERVATION', '#2f5fbf', '#ffffff');
+    sign(14 * A, 13 * A, 'SPECIMEN TESTING', '#9fb0c8', '#1f2a3d');
+    // Hazard triangles.
     for (const [bx, by] of [[14, 15], [49, 16], [30, 6]]) {
-      const x = bx * TILE, y = by * TILE;
+      const x = bx * A, y = by * A - 4;
+      g.fillStyle = '#1b1b1b';
+      for (let r = 0; r < 10; r++) g.fillRect(x - Math.floor(r * 0.55) - 1, y + r, Math.floor(r * 1.1) + 3, 1);
       g.fillStyle = '#f2c230';
-      g.beginPath(); g.moveTo(x, y - 24); g.lineTo(x + 26, y + 20); g.lineTo(x - 26, y + 20); g.closePath(); g.fill();
-      g.fillStyle = '#1b1b1b'; g.font = 'bold 26px sans-serif'; g.textAlign = 'center';
-      g.fillText('!', x, y + 6); g.textAlign = 'left';
+      for (let r = 1; r < 9; r++) g.fillRect(x - Math.floor(r * 0.55), y + r, Math.floor(r * 1.1) + 1, 1);
+      g.fillStyle = '#1b1b1b'; g.fillRect(x, y + 3, 1, 3); g.fillRect(x, y + 7, 1, 1);
     }
   }
 
@@ -216,60 +221,65 @@ class TileMap {
   }
 
   _drawWall(g, tx, ty) {
-    const x = tx * TILE, y = ty * TILE;
+    const A = ART_TILE, x = tx * A, y = ty * A;
     const e = this._exposed(tx, ty);
     const edge = e.up || e.down || e.left || e.right;
-    g.fillStyle = edge ? '#e6ebf2' : '#cdd4df';
-    g.fillRect(x, y, TILE, TILE);
     if (!edge) {
-      g.fillStyle = 'rgba(120,135,160,0.18)';
-      if (tx % 4 === 0) g.fillRect(x, y, 1, TILE);
-      if (ty % 3 === 0) g.fillRect(x, y, TILE, 1);
+      g.fillStyle = '#c3ccd9'; g.fillRect(x, y, A, A);
+      g.fillStyle = '#b5bfce';
+      if (tx % 3 === 0) g.fillRect(x, y, 1, A);
+      if (ty % 2 === 0) g.fillRect(x, y, A, 1);
+      if ((tx * 7 + ty * 3) % 5 === 0) g.fillRect(x + 5, y + 5, 1, 1);
       return;
     }
-    g.fillStyle = 'rgba(255,255,255,0.7)';
-    g.fillRect(x + 3, y + 3, TILE - 6, 2);
-    g.fillStyle = '#8d99ad';
-    if (e.left) g.fillRect(x, y, 3, TILE);
-    if (e.right) g.fillRect(x + TILE - 3, y, 3, TILE);
-    if (e.down) g.fillRect(x, y + TILE - 3, TILE, 3);
+    g.fillStyle = '#eef2f7'; g.fillRect(x, y, A, A);
+    g.fillStyle = '#dfe5ee'; g.fillRect(x, y + 6, A, 6);
+    g.fillStyle = '#ffffff'; g.fillRect(x + 1, y + 1, A - 2, 1);
+    g.fillStyle = '#c9d1de'; g.fillRect(x + A - 1, y + 1, 1, A - 2);
+    g.fillStyle = '#7f8ca2';
+    if (e.left) g.fillRect(x, y, 1, A);
+    if (e.right) g.fillRect(x + A - 1, y, 1, A);
+    if (e.down) g.fillRect(x, y + A - 1, A, 1);
     if (e.up) {
-      g.fillStyle = '#ffffff'; g.fillRect(x, y, TILE, 2);
-      g.fillStyle = '#4b7bd6'; g.fillRect(x, y + 2, TILE, 5);
-      g.fillStyle = '#2d58ad'; g.fillRect(x, y + 7, TILE, 1);
+      g.fillStyle = '#ffffff'; g.fillRect(x, y, A, 1);
+      g.fillStyle = '#4b7bd6'; g.fillRect(x, y + 1, A, 2);
+      g.fillStyle = '#2d58ad'; g.fillRect(x, y + 3, A, 1);
     }
   }
 
   _drawGirder(g, tx, ty) {
-    const x = tx * TILE, y = ty * TILE;
-    g.fillStyle = '#7f8999';
-    g.fillRect(x, y + 2, TILE, TILE - 4);
-    g.fillStyle = '#b6bfcc'; g.fillRect(x, y, TILE, 5);
-    g.fillStyle = '#566070'; g.fillRect(x, y + TILE - 5, TILE, 5);
-    g.strokeStyle = '#5c6676'; g.lineWidth = 2;
-    g.beginPath();
-    g.moveTo(x + 2, y + 6); g.lineTo(x + TILE - 2, y + TILE - 6);
-    g.moveTo(x + TILE - 2, y + 6); g.lineTo(x + 2, y + TILE - 6);
-    g.stroke();
-    g.fillStyle = '#d6dce5';
-    g.fillRect(x + 4, y + 8, 3, 3); g.fillRect(x + TILE - 7, y + 8, 3, 3);
+    const A = ART_TILE, x = tx * A, y = ty * A;
+    g.fillStyle = '#7f8999'; g.fillRect(x, y + 1, A, A - 2);
+    g.fillStyle = '#b6bfcc'; g.fillRect(x, y, A, 2);
+    g.fillStyle = '#4d5666'; g.fillRect(x, y + A - 2, A, 2);
+    g.fillStyle = '#5c6676';
+    for (let k = 2; k < A - 2; k++) { g.fillRect(x + k, y + k, 1, 1); g.fillRect(x + A - 1 - k, y + k, 1, 1); }
+    g.fillStyle = '#d6dce5'; g.fillRect(x + 1, y + 3, 1, 1); g.fillRect(x + A - 2, y + 3, 1, 1);
   }
 
   _drawLights(g) {
+    const A = ART_TILE;
     for (let tx = 2; tx < this.w - 2; tx += 7) {
       for (let ty = 1; ty < this.h; ty++) {
         if (this.solid(tx, ty - 1) && !this.solid(tx, ty) && this.solid(tx + 1, ty - 1) && !this.solid(tx + 1, ty)) {
-          const x = tx * TILE, y = ty * TILE;
-          const glow = g.createRadialGradient(x + TILE, y, 4, x + TILE, y, 150);
-          glow.addColorStop(0, 'rgba(255,255,245,0.55)');
-          glow.addColorStop(1, 'rgba(255,255,245,0)');
-          g.fillStyle = glow;
-          g.fillRect(x + TILE - 150, y, 300, 150);
-          g.fillStyle = '#9aa5b6'; g.fillRect(x + 4, y, TILE * 2 - 8, 8);
-          g.fillStyle = '#ffffff'; g.fillRect(x + 8, y + 7, TILE * 2 - 16, 4);
+          const x = tx * A, y = ty * A;
+          // Stepped pixel light cone.
+          for (let k = 0; k < 4; k++) {
+            g.fillStyle = `rgba(255,255,235,${0.12 - k * 0.025})`;
+            const spread = 8 + k * 10, depth = 14 + k * 12;
+            g.fillRect(x + A - spread, y + 3, spread * 2, depth);
+          }
+          g.fillStyle = '#8b96a8'; g.fillRect(x + 2, y, A * 2 - 4, 2);
+          g.fillStyle = '#ffffff'; g.fillRect(x + 3, y + 2, A * 2 - 6, 1);
           break;
         }
       }
     }
   }
+}
+
+function shadeCss(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const k = 0.7;
+  return `rgb(${((n >> 16) & 255) * k | 0},${((n >> 8) & 255) * k | 0},${(n & 255) * k | 0})`;
 }

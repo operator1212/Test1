@@ -15,7 +15,7 @@ class Player {
     this.game = game;
     this.x = x; this.y = y;          // x = centre, y = feet
     this.vx = 0; this.vy = 0;
-    this.w = 24; this.h = 100;
+    this.w = 22; this.h = 108;
     this.onGround = false;
     this.coyote = 0; this.jumpBuf = 0; this.jumping = false;
     this.facing = 1;
@@ -27,15 +27,20 @@ class Player {
     this.runPhase = 0;
     this.t = 0;
     this.tentacle = new Tentacle(this);
-    this.pts = RAG_REST.map(() => ({ x: 0, y: 0 }));
-    this.bones = RAG_BONES.map(([a, b, name, kind, ra, rb]) => ({ a: this.pts[a], b: this.pts[b], name, kind, ra, rb, blood: 0, char: 0 }));
+    this.flip = 1;
+    this.pts = RAG_REST.map(([ox, oy]) => ({ x: x + ox, y: y + oy }));
+    this.pieces = PIECE_DEFS.map(([name, a, b, z]) => {
+      const len = dist(RAG_REST[a][0], RAG_REST[a][1], RAG_REST[b][0], RAG_REST[b][1]) / PX;
+      return new Piece(this, name, this.pts[a], this.pts[b], genSprite(name, len, 'subject'), z);
+    });
+    this.pieces.sort((p, q) => p.z - q.z);
   }
 
-  shoulder() { return { x: this.x, y: this.y - 62 }; }
+  shoulder() { return { x: this.x, y: this.y + RAG_REST[R.NECK][1] }; }
 
   muzzle() {
     const s = this.shoulder();
-    let len = 38;
+    let len = 13 * PX;
     const r = this.game.map.raycast(s.x, s.y, this.aim.x, this.aim.y, len);
     if (r.hit) len = Math.max(0, r.dist - 3);
     return { x: s.x + this.aim.x * len, y: s.y + this.aim.y * len };
@@ -191,103 +196,93 @@ class Player {
   }
 
   // ------------------------------------------------------------ rendering
+  // Pose the sprite puppet (art pixels, facing right, then mirrored).
   computePose() {
     const f = this.facing;
-    const P = RAG_REST.map((o) => [o[0], o[1]]);
+    this.flip = f;
+    const P = REST_ART.map((o) => [o[0], o[1]]);
     const t = this.t;
     const running = this.onGround && Math.abs(this.vx) > 20;
     if (running) {
       const ph = this.runPhase;
       for (const [k, ft, p] of [[R.KNEE_F, R.FOOT_F, ph], [R.KNEE_B, R.FOOT_B, ph + Math.PI]]) {
-        const fx = Math.sin(p) * 14 * sign(this.vx) * f, lift = Math.max(0, Math.cos(p)) * 11;
-        P[ft] = [fx, -5 - lift];
-        P[k] = [fx * 0.5 + 5, -21 - lift * 0.6];
+        const fx = Math.sin(p) * 5 * sign(this.vx) * f, lift = Math.max(0, Math.cos(p)) * 3.5;
+        P[ft] = [fx, -2 - lift];
+        P[k] = [fx * 0.5 + 2, -10.5 - lift * 0.6];
       }
-      P[R.PELVIS][1] -= Math.abs(Math.cos(ph)) * 2;
-      P[R.NECK][0] += 4; P[R.HEAD][0] += 6;
+      P[R.PELVIS][1] -= Math.abs(Math.cos(ph)) * 0.8;
+      P[R.NECK][0] += 1.5; P[R.HEAD][0] += 2.2;
     } else if (!this.onGround) {
       if (this.tentacle.attachedFixed()) {
-        P[R.KNEE_F] = [3, -19]; P[R.FOOT_F] = [1, -4]; P[R.KNEE_B] = [-2, -20]; P[R.FOOT_B] = [-5, -6];
+        P[R.KNEE_F] = [1.5, -10]; P[R.FOOT_F] = [0.5, -1.5]; P[R.KNEE_B] = [-1, -10.5]; P[R.FOOT_B] = [-2, -2];
       } else {
-        P[R.KNEE_F] = [9, -27]; P[R.FOOT_F] = [2, -13]; P[R.KNEE_B] = [4, -24]; P[R.FOOT_B] = [-6, -11];
+        P[R.KNEE_F] = [4, -13]; P[R.FOOT_F] = [1, -6]; P[R.KNEE_B] = [2, -12]; P[R.FOOT_B] = [-2.5, -5];
       }
     } else {
-      P[R.NECK][1] += Math.sin(t * 2.2) * 0.8;
-      P[R.HEAD][1] += Math.sin(t * 2.2 - 0.4) * 1.1;
+      P[R.NECK][1] += Math.sin(t * 2.2) * 0.3;
+      P[R.HEAD][1] += Math.sin(t * 2.2 - 0.4) * 0.4;
     }
     const pts = this.pts;
-    for (let i = 0; i < pts.length; i++) { pts[i].x = this.x + P[i][0] * f; pts[i].y = this.y + P[i][1]; }
+    for (let i = 0; i < pts.length; i++) { pts[i].x = this.x + P[i][0] * PX * f; pts[i].y = this.y + P[i][1] * PX; }
     // Front arm aims the gun.
     const N = pts[R.NECK];
-    const a = this.aim, rc = this.recoil * 6;
-    pts[R.ELBOW_F].x = N.x + a.x * 14 - a.y * 3 * f; pts[R.ELBOW_F].y = N.y + a.y * 14 + 4;
-    pts[R.HAND_F].x = N.x + a.x * (29 - rc); pts[R.HAND_F].y = N.y + a.y * (29 - rc);
+    const a = this.aim, rc = this.recoil * 2 * PX;
+    pts[R.ELBOW_F].x = N.x + a.x * 5.5 * PX; pts[R.ELBOW_F].y = N.y + a.y * 5.5 * PX + PX;
+    pts[R.HAND_F].x = N.x + a.x * (11 * PX - rc); pts[R.HAND_F].y = N.y + a.y * (11 * PX - rc);
     // Back arm reaches toward whatever the tentacle is doing.
     const tn = this.tentacle;
     if (tn.state !== 'idle') {
       const d = dist(N.x, N.y, tn.tip.x, tn.tip.y) || 1;
       const ux = (tn.tip.x - N.x) / d, uy = (tn.tip.y - N.y) / d;
-      pts[R.ELBOW_B].x = N.x + ux * 14; pts[R.ELBOW_B].y = N.y + uy * 14 + 3;
-      pts[R.HAND_B].x = N.x + ux * 27; pts[R.HAND_B].y = N.y + uy * 27;
+      pts[R.ELBOW_B].x = N.x + ux * 5.5 * PX; pts[R.ELBOW_B].y = N.y + uy * 5.5 * PX + PX;
+      pts[R.HAND_B].x = N.x + ux * 11 * PX; pts[R.HAND_B].y = N.y + uy * 11 * PX;
     } else if (running) {
-      const sw = Math.sin(this.runPhase) * 8;
-      pts[R.ELBOW_B].x = N.x - f * 2 + sw * 0.5; pts[R.ELBOW_B].y = N.y + 15;
-      pts[R.HAND_B].x = N.x + sw; pts[R.HAND_B].y = N.y + 28;
+      const sw = Math.sin(this.runPhase) * 3 * PX;
+      pts[R.ELBOW_B].x = N.x + sw * 0.5; pts[R.ELBOW_B].y = N.y + 6 * PX;
+      pts[R.HAND_B].x = N.x + sw; pts[R.HAND_B].y = N.y + 12 * PX;
     }
-    return Math.atan2(a.y, Math.abs(a.x)) * 0.35 * f;
+    for (const q of this.pieces) q.updateBounds();
   }
 
-  render(ctx) {
-    const headAngle = this.computePose();
+  render(fb) {
+    this.computePose();
     const pts = this.pts, f = this.facing;
-    // Writhing tendrils on the back.
+    // Writhing tendrils out of the back.
     const N = pts[R.NECK], Pl = pts[R.PELVIS];
-    for (let i = 0; i < 4; i++) {
-      const k = 0.15 + i * 0.22;
-      let x = lerp(N.x, Pl.x, k) - f * 8, y = lerp(N.y, Pl.y, k);
-      let ang = Math.atan2(-0.6 + i * 0.35, -f) + Math.sin(this.t * 3 + i * 1.7) * 0.4;
-      const segs = 6, len = 24 - i * 2;
-      for (let sgi = 0; sgi < segs; sgi++) {
-        ang += Math.sin(this.t * 4 + i + sgi * 0.8) * 0.22;
-        const nx = x + Math.cos(ang) * len / segs * 1.4, ny = y + Math.sin(ang) * len / segs * 1.4;
-        ctx.strokeStyle = sgi % 2 ? '#4a0815' : '#2a030b';
-        ctx.lineWidth = lerp(6, 1.5, sgi / segs); ctx.lineCap = 'round';
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+    for (let i = 0; i < 3; i++) {
+      const k = 0.2 + i * 0.3;
+      let x = lerp(N.x, Pl.x, k) / PX - f * 3, y = lerp(N.y, Pl.y, k) / PX;
+      let ang = Math.atan2(-0.5 + i * 0.4, -f) + Math.sin(this.t * 3 + i * 1.7) * 0.4;
+      for (let sgi = 0; sgi < 7; sgi++) {
+        ang += Math.sin(this.t * 4 + i + sgi * 0.8) * 0.25;
+        const nx = x + Math.cos(ang) * 1.2, ny = y + Math.sin(ang) * 1.2;
+        fb.put(x, y, sgi < 3 ? TENT_OUT : TENT_MID);
+        if (sgi < 3) fb.put(x, y + 1, TENT_OUT);
         x = nx; y = ny;
       }
+      fb.put(x, y, TENT_HI);
     }
-    ctx.lineCap = 'butt';
-    drawFigure(ctx, this.bones, pts[R.HEAD], headAngle, f, PALETTES.subject, 'subject', null, [], 0, 0);
-    this.renderGun(ctx);
+    for (const q of this.pieces) q.raster(fb);
+    this.renderGun(fb);
   }
 
-  renderGun(ctx) {
+  renderGun(fb) {
     const h = this.pts[R.HAND_F];
-    const ang = Math.atan2(this.aim.y, this.aim.x);
-    ctx.save();
-    ctx.translate(h.x, h.y);
-    ctx.rotate(ang);
-    if (this.aim.x < 0) ctx.scale(1, -1);
+    const a = this.aim;
+    const x = h.x / PX, y = h.y / PX;
+    const nx = -a.y, ny = a.x;
     if (this.weapon === 0) {
-      ctx.fillStyle = '#2f343c'; ctx.fillRect(-8, -5, 30, 10);
-      ctx.fillStyle = '#6b7482'; ctx.fillRect(-8, -5, 30, 3);
-      ctx.fillStyle = '#1d2026'; ctx.fillRect(20, -3.5, 10, 7);
-      ctx.fillStyle = '#23262c'; ctx.fillRect(-4, 4, 6, 8);
-      if (this.cool <= 0) {
-        ctx.fillStyle = '#d7dce4';
-        ctx.beginPath(); ctx.moveTo(38, 0); ctx.lineTo(29, -4.5); ctx.lineTo(29, 4.5); ctx.closePath(); ctx.fill();
-      }
+      fb.line(x - a.x * 2, y - a.y * 2, x + a.x * 7, y + a.y * 7, GUN_DARK);
+      fb.line(x - a.x * 2 + nx * 0.9, y - a.y * 2 + ny * 0.9, x + a.x * 6 + nx * 0.9, y + a.y * 6 + ny * 0.9, GUN_MID);
+      if (this.cool <= 0) fb.put(x + a.x * 8, y + a.y * 8, SPIKE_TIP);
     } else {
-      const heatCol = this.overheat ? '#ff3b2f' : `hsl(${lerp(190, 10, this.heat)},100%,60%)`;
-      ctx.fillStyle = '#e8edf4'; ctx.strokeStyle = '#4a5566'; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.roundRect(-8, -6, 32, 12, 5); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#3d6fd6'; ctx.fillRect(-4, -1, 22, 2);
-      ctx.fillStyle = '#23262c'; ctx.fillRect(-3, 5, 6, 8);
-      ctx.shadowColor = heatCol; ctx.shadowBlur = 8; ctx.fillStyle = heatCol;
-      for (let i = 0; i < 3; i++) ctx.fillRect(4 + i * 6, -8, 3, 16);
-      ctx.beginPath(); ctx.arc(27, 0, this.firingLaser ? 4.5 : 3, 0, TAU); ctx.fill();
-      ctx.shadowBlur = 0;
+      const heat = this.overheat ? hexc('#ff3b2f') : mixc(hexc('#5ce1ff'), hexc('#ff5a2a'), this.heat);
+      fb.line(x - a.x * 2, y - a.y * 2, x + a.x * 7, y + a.y * 7, GUN_WHITE);
+      fb.line(x - a.x * 2 + nx * 0.9, y - a.y * 2 + ny * 0.9, x + a.x * 6 + nx * 0.9, y + a.y * 6 + ny * 0.9, GUN_EDGE);
+      for (let k = 0; k < 3; k++) fb.put(x + a.x * (1 + k * 2) - nx * 0.9, y + a.y * (1 + k * 2) - ny * 0.9, heat);
+      fb.put(x + a.x * 8, y + a.y * 8, this.firingLaser ? hexc('#ffffff') : heat);
     }
-    ctx.restore();
   }
 }
+
+const GUN_DARK = hexc('#23272e'), GUN_MID = hexc('#5d6674'), GUN_WHITE = hexc('#e8edf4'), GUN_EDGE = hexc('#4a5566');
