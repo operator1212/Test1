@@ -65,6 +65,7 @@ const Sfx = {
   clang() { this.tone(rand(900, 1300), rand(600, 800), 0.12, 0.15, 'triangle'); },
   grind() { this.noise(0.08, 3000, 3, 0.25, 'bandpass', 1500); },
   dash() { this.noise(0.18, 600, 0.8, 0.5, 'bandpass', 3000); },
+  bite() { this.noise(0.14, 500, 2.5, 0.9, 'bandpass', 120); this.tone(160, 70, 0.08, 0.35, 'square'); },
   hurt() { this.tone(260, 110, 0.18, 0.3, 'sawtooth'); },
 
   laserOn(on) {

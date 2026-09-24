@@ -1,7 +1,8 @@
 // World container: fixed-step simulation, camera, objectives, pixel rendering + HUD.
 'use strict';
 
-const ART_VIEW_H = 270;      // target vertical resolution in art pixels
+const ART_VIEW_H = 270;
+const KILL_SLOW_TIME = 0.6;      // target vertical resolution in art pixels
 const SOLVER_ITERS = 8;
 
 class Game {
@@ -18,6 +19,7 @@ class Game {
     this.messages = [];
     this.time = 0;
     this.timeScale = 1;
+    this.slowPulse = 0;       // real seconds left of the kill slow-down
     this.shakeAmt = 0;
     this.showHelp = true;
     this.shakeOn = true;
@@ -135,8 +137,24 @@ class Game {
     }
   }
 
+  // Time scale for this frame: the F toggle times a brief eased slow-down after
+  // killing someone who was attacking you.
+  frameTimeScale(realDt) {
+    let k = 1;
+    if (this.slowPulse > 0) {
+      this.slowPulse = Math.max(0, this.slowPulse - realDt);
+      const f = this.slowPulse / KILL_SLOW_TIME;
+      k = 1 - 0.78 * f * f;
+    }
+    return this.timeScale * k;
+  }
+
   onNpcDeath(npc, cause) {
     const h = npc.rag.head;
+    if (npc.type === 'soldier' && (npc.mode === 'attack' || this.time - (npc.lastShotT || -99) < 4)) {
+      this.slowPulse = KILL_SLOW_TIME;
+      Sfx.tone(180, 60, 0.4, 0.3, 'sine');
+    }
     this.fx.text(h.x, h.y - 30, npc.type === 'scientist' ? 'SCIENTIST KILLED' : 'GUARD DOWN', '#ff5a64');
     if (npc.type === 'scientist' && cause === 'laser') this.completeObjective('laser');
     else if (npc.type === 'scientist' && !this.objectives[1].done) this.message('Scientist died - but not by laser. R resets', '#ffcf6a');
@@ -309,6 +327,7 @@ class Game {
     const sp = 950;
     const mx = H.x + Math.cos(a) * 12, my = H.y + Math.sin(a) * 12;
     this.shots.push(new Bullet(mx, my, Math.cos(a) * sp, Math.sin(a) * sp, 'npc', 9, 'bullet', npc.rag));
+    npc.lastShotT = this.time;
     this.fx.flash(mx, my, 14, '#ffe7a0');
     Sfx.pistol();
   }
@@ -492,7 +511,7 @@ class Game {
     const ax = 4 + WEAPONS.length * 47;
     panel(ax, H - 20, 76, 16);
     const tn = pl.tentacle;
-    const ts = tn.state === 'attached' ? (tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
+    const ts = tn.state === 'attached' ? (tn.eating ? 'EATING' : tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
     pixelText(g, ts, ax + 3, H - 17, '#ffb3b8');
     g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(ax + 3, H - 9, 70, 2);
     g.fillStyle = '#7fe0ff'; g.fillRect(ax + 3, H - 9, Math.round(70 * clamp(1 - pl.dashCool / 0.5, 0, 1)), 2);
@@ -509,9 +528,10 @@ class Game {
     // Help.
     if (this.showHelp) {
       const lines = [
-        ['A D', 'MOVE'], ['W SPACE', 'JUMP, WALL JUMP, LEAP OFF TENTACLE'], ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
+        ['A D', 'MOVE (AUTO VAULT + SQUEEZE)'], ['SPACE', 'JUMP / WALL JUMP / LET GO'], ['W S', 'IN AIR: GRAB WALL/CEILING, CLIMB'],
+        ['S', 'ON GROUND: SQUEEZE LOW'], ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
         ['LMB', 'FIRE WEAPON'], ['RMB HOLD', 'TENTACLE: LATCH/ZIP, GRAB + SWING'],
-        ['E', 'WHILE HOLDING: RIP OFF / DEVOUR'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION'],
+        ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION'],
         ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
         ['X / R', 'CLEAR HARPOONS / RESET'], ['H', 'HIDE HELP'],
       ];

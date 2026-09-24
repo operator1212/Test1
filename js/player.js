@@ -5,6 +5,8 @@
 const RUN_SPEED = 265;
 const JUMP_V = 650;
 const DASH_SPEED = 860;
+const STAND_H = 108, SQUEEZE_H = 44;
+const CLIMB_SPEED = 240, CEIL_SPEED = 210;
 const WEAPONS = [
   { name: 'HARPOON', cool: 0.42 },
   { name: 'LASER', cool: 0 },
@@ -39,7 +41,12 @@ class Player {
     this.dashT = 0; this.dashCool = 0; this.airDashes = 1; this.dashDx = 1; this.dashDy = 0;
     this.rammed = new Set();
     this.trail = [];
-    this.wallDir = 0; this.lastWallDir = 0; this.wallCoyote = 0; this.wallLock = 0; this.sliding = false;
+    this.wallDir = 0; this.lastWallDir = 0; this.wallCoyote = 0; this.wallLock = 0;
+    // Movement modes: normal | wall (clinging/climbing) | ceiling (crawling upside down).
+    this.mode = 'normal';
+    this.clingDir = 0; this.climbPhase = 0; this.lastClimbUp = false;
+    this.squeezed = false;           // compressed to crawl through low gaps
+    this.biteT = 0;
     this.tentacle = new Tentacle(this);
     this.flip = 1;
     this.pts = RAG_REST.map(([ox, oy]) => ({ x: x + ox, y: y + oy }));
@@ -54,7 +61,68 @@ class Player {
     this.pieces.sort((p, q) => p.z - q.z);
   }
 
-  shoulder() { return { x: this.x, y: this.y + RAG_REST[R.NECK][1] }; }
+  shoulder() {
+    if (this.mode === 'ceiling') return { x: this.x + this.facing * 6 * PX, y: this.y - this.h + 5 * PX };
+    if (this.squeezed) return { x: this.x + this.facing * 6 * PX, y: this.y - 5 * PX };
+    return { x: this.x, y: this.y + RAG_REST[R.NECK][1] };
+  }
+
+  mouth() {
+    const h = this.pts[R.HEAD];
+    return { x: h.x + this.facing * 2 * PX, y: h.y + 2 * PX };
+  }
+
+  fits(x, y, h) {
+    return !this.game.map.boxSolid(x - this.w / 2, y - h, x + this.w / 2, y);
+  }
+
+  setSqueezed(on) {
+    if (on === this.squeezed) return true;
+    if (!on && !this.fits(this.x, this.y, STAND_H)) return false;
+    this.squeezed = on;
+    this.h = on ? SQUEEZE_H : STAND_H;
+    return true;
+  }
+
+  // Wall probe: +1 / -1 when a wall covers most of the body's side, else 0.
+  // (A short lip, like the edge of a vent opening, doesn't count.)
+  probeWall() {
+    const [l, t, r, b] = this.box();
+    const m = this.game.map;
+    const pad = Math.min(12, this.h * 0.2);
+    const ys = [t + pad, (t + b) / 2, b - pad];
+    const side = (x) => ys.filter((y) => m.solidPx(x, y)).length >= 2;
+    return side(r + 1) ? 1 : side(l - 1) ? -1 : 0;
+  }
+
+  // Height of the top of the wall beside us (world y), scanning up from the feet.
+  wallTop(dir) {
+    const m = this.game.map;
+    const x = dir > 0 ? this.x + this.w / 2 + 1 : this.x - this.w / 2 - 1;
+    let ty = Math.floor((this.y - 1) / TILE);
+    if (!m.solidPx(x, this.y - 1)) return this.y;
+    while (ty > 0 && m.solid(Math.floor(x / TILE), ty - 1)) ty--;
+    return ty * TILE;
+  }
+
+  setMode(mode) {
+    if (mode === this.mode) return;
+    if (this.mode === 'ceiling') {
+      // Unfold downward from the ceiling if there's room.
+      this.mode = 'normal';
+      if (this.fits(this.x, this.y + (STAND_H - SQUEEZE_H), STAND_H)) { this.y += STAND_H - SQUEEZE_H; this.setSqueezed(false); }
+    }
+    this.mode = mode;
+    if (mode === 'ceiling') {
+      this.setSqueezed(true);
+      // Snap flat against the ceiling.
+      const top = Math.round((this.y - STAND_H) / TILE) * TILE;
+      const y = top + SQUEEZE_H + 0.01;
+      if (this.fits(this.x, y, SQUEEZE_H)) this.y = y;
+      this.vy = 0;
+    }
+    if (mode === 'wall') { this.clingDir = this.wallDir; this.vx = 0; this.vy = 0; Sfx.latch(); }
+  }
 
   muzzle() {
     const s = this.shoulder();
@@ -74,9 +142,24 @@ class Player {
 
   moveX(dx) {
     if (!dx) return false;
+    const ox = this.x;
     this.x += dx;
     const [l, t, r, b] = this.box();
     if (!this.game.map.boxSolid(l, t, r, b)) return false;
+    if (this.mode === 'normal' && (this.onGround || this.grounded) && this.dashT <= 0) {
+      // Too low to stand: squeeze through.
+      if (!this.squeezed && this.fits(this.x, this.y, SQUEEZE_H)) { this.setSqueezed(true); return false; }
+      // Step up small ledges, vault anything up to ~2 tiles.
+      for (let step = 6; step <= 72; step += 6) {
+        if (!this.fits(this.x, this.y - step, this.h) || !this.fits(ox, this.y - step, this.h)) continue;
+        if (step <= 18) { this.y -= step; return false; }
+        this.x = ox;
+        this.vy = -Math.sqrt(2 * GRAVITY * (step + 10));
+        this.grounded = false; this.onGround = false;
+        this.vaultT = 0.35;           // don't grab the thing we're vaulting
+        return false;
+      }
+    }
     if (dx > 0) this.x = Math.floor(r / TILE) * TILE - this.w / 2 - 0.001;
     else this.x = (Math.floor(l / TILE) + 1) * TILE + this.w / 2 + 0.001;
     return true;
@@ -146,6 +229,7 @@ class Player {
     const s = this.game.spawn;
     this.x = s.x; this.y = s.y; this.vx = this.vy = 0;
     this.hp = this.maxHp; this.dead = false;
+    this.mode = 'normal'; this.squeezed = false; this.h = STAND_H;
     this.buildPieces();
   }
 
@@ -180,17 +264,38 @@ class Player {
     const ax = (right ? 1 : 0) - (left ? 1 : 0);
     const roped = this.tentacle.attachedFixed();
 
-    // Dash (Shift): short burst in the held direction, once per airtime.
+    // ------------------------------------------------------------ movement
+    const map = g.map;
     this.dashCool -= dt;
-    if ((Input.hit('ShiftLeft') || Input.hit('ShiftRight')) && this.dashCool <= 0 && (this.onGround || this.airDashes > 0)) {
+    this.wallLock -= dt;
+    this.vaultT = (this.vaultT || 0) - dt;
+    this.wallDir = this.probeWall();
+    const ceilAbove = () => { const [l, t, r] = this.box(); return map.boxSolid(l + 2, t - 3, r - 2, t); };
+    const jumpHit = Input.hit('Space');
+    const upHit = Input.hit('KeyW') || Input.hit('ArrowUp');
+
+    // Dash (Shift): short burst in the held direction, once per airtime. Works off walls too.
+    if ((Input.hit('ShiftLeft') || Input.hit('ShiftRight')) && this.dashCool <= 0 && (this.onGround || this.airDashes > 0 || this.mode !== 'normal')) {
       let dx = ax, dy = (down ? 1 : 0) - (up ? 1 : 0);
-      if (!dx && !dy) dx = this.facing;
+      if (!dx && !dy) dx = this.mode === 'wall' ? -this.clingDir : this.facing;
       const l = Math.hypot(dx, dy);
       this.dashDx = dx / l; this.dashDy = dy / l;
       this.dashT = 0.16; this.dashCool = 0.5;
-      if (!this.onGround) this.airDashes--;
+      if (!this.onGround && this.mode === 'normal') this.airDashes--;
+      this.setMode('normal');
       this.rammed.clear();
       Sfx.dash();
+    }
+
+    // Grab walls and ceilings while airborne.
+    if (this.mode === 'normal' && !this.onGround && this.dashT <= 0 && this.wallLock <= 0 && this.vaultT <= 0 && !roped) {
+      if (this.wallDir && (ax === this.wallDir || up)) this.setMode('wall');
+      else if (up && ceilAbove()) this.setMode('ceiling');
+    }
+    // Hug the floor to squeeze (S), stand back up when there's room.
+    if (this.mode === 'normal') {
+      if (down && this.onGround) this.setSqueezed(true);
+      else if (this.squeezed && !down) this.setSqueezed(false);
     }
 
     if (this.dashT > 0) {
@@ -198,49 +303,58 @@ class Player {
       this.vx = this.dashDx * DASH_SPEED; this.vy = this.dashDy * DASH_SPEED;
       this.trail.push({ x: this.x, y: this.y, t: 0.22 });
       if (this.dashT <= 0) { this.vx *= 0.55; this.vy *= 0.35; }
+    } else if (this.mode === 'wall') {
+      // Cling: W/S climb, stick in place otherwise; pull away to let go.
+      const vin = (down ? 1 : 0) - (up ? 1 : 0);
+      this.vy = vin * CLIMB_SPEED;
+      this.vx = this.clingDir * 60;
+      this.lastClimbUp = vin < 0;
+      this.climbPhase += Math.abs(this.vy) * dt * 0.06;
+      this.airDashes = 1;
+      this.facing = this.clingDir;
+      if (up && ceilAbove()) this.setMode('ceiling');
+      else if (ax === -this.clingDir) { this.setMode('normal'); this.vx = -this.clingDir * 160; this.wallLock = 0.12; }
+      else if (jumpHit) {
+        this.setMode('normal');
+        this.vy = -600; this.vx = -this.clingDir * 400; this.wallLock = 0.18; this.jumping = true;
+        Sfx.whip();
+      }
+    } else if (this.mode === 'ceiling') {
+      this.vx = ax * CEIL_SPEED;
+      this.vy = -60;
+      this.climbPhase += Math.abs(this.vx) * dt * 0.06;
+      this.airDashes = 1;
+      if (ax) this.facing = ax;
+      if (down || jumpHit) { this.setMode('normal'); this.vy = 60; }
     } else {
-      // Horizontal movement.
-      this.wallLock -= dt;
-      if (this.onGround) this.vx = approach(this.vx, ax * RUN_SPEED, (ax ? 2400 : 2800) * dt);
+      const speed = this.squeezed && this.onGround ? RUN_SPEED * 0.65 : RUN_SPEED;
+      if (this.onGround) this.vx = approach(this.vx, ax * speed, (ax ? 2800 : 3000) * dt);
       else if (roped) this.vx += ax * 750 * dt;
       else if (this.wallLock > 0) { /* brief lockout after a wall jump */ }
-      else if (ax !== 0) { if (ax * this.vx < RUN_SPEED) this.vx = approach(this.vx, ax * RUN_SPEED, 1500 * dt); }
-      else this.vx *= Math.max(0, 1 - 1.2 * dt);
+      else if (ax !== 0) { if (ax * this.vx < RUN_SPEED) this.vx = approach(this.vx, ax * RUN_SPEED, 1800 * dt); }
+      else this.vx *= Math.max(0, 1 - 1.5 * dt);
       this.vy = Math.min(this.vy + GRAVITY * dt, 1200);
     }
     for (const tr of this.trail) tr.t -= dt;
     this.trail = this.trail.filter((tr) => tr.t > 0);
 
-    // Wall contact, slide and wall jump.
-    {
-      const [l, t, r, b] = this.box();
-      this.wallDir = g.map.boxSolid(r, t + 12, r + 2, b - 12) ? 1 : g.map.boxSolid(l - 2, t + 12, l, b - 12) ? -1 : 0;
-    }
-    this.sliding = false;
-    if (!this.onGround && this.wallDir) {
-      this.wallCoyote = 0.12; this.lastWallDir = this.wallDir;
-      this.airDashes = 1;
-      if (ax === this.wallDir && this.vy > 0 && this.dashT <= 0) {
-        this.vy = Math.min(this.vy, 150);
-        this.sliding = true;
-        if (Math.random() < 0.3) g.fx.spark(this.x + this.wallDir * 11, this.y - 10, 0, -40, 0.2, '#c9d3e0');
-      }
-    } else this.wallCoyote -= dt;
+    if (this.mode === 'normal' && !this.onGround && this.wallDir) { this.wallCoyote = 0.12; this.lastWallDir = this.wallDir; }
+    else this.wallCoyote -= dt;
 
-    // Jumping (coyote time + input buffer). Off a grapple = fling, off a wall = kick away.
+    // Jumping: Space anywhere; W also jumps from the ground (in the air W grabs/climbs).
     const jumpHeld = Input.down('Space') || up;
-    if (Input.hit('Space') || Input.hit('KeyW') || Input.hit('ArrowUp')) this.jumpBuf = 0.12;
+    if (jumpHit || (upHit && (this.onGround || this.coyote > 0))) this.jumpBuf = 0.12;
     else this.jumpBuf -= dt;
     this.coyote = this.onGround ? 0.1 : this.coyote - dt;
-    if (this.jumpBuf > 0) {
+    if (this.jumpBuf > 0 && this.mode === 'normal') {
       if (roped) {
         this.tentacle.release(false);
         this.vy = Math.min(this.vy, -560); this.vx += ax * 150;
         this.jumpBuf = 0;
-      } else if (this.coyote > 0) {
+      } else if (this.coyote > 0 && (!this.squeezed || this.setSqueezed(false))) {
         this.vy = -JUMP_V; this.coyote = 0; this.jumpBuf = 0; this.jumping = true;
       } else if (this.wallCoyote > 0) {
-        this.vy = -620; this.vx = -this.lastWallDir * 380;
+        this.vy = -600; this.vx = -this.lastWallDir * 400;
         this.wallLock = 0.16; this.wallCoyote = 0; this.jumpBuf = 0; this.jumping = true;
         Sfx.whip();
       }
@@ -249,15 +363,34 @@ class Player {
     if (this.vy >= 0) this.jumping = false;
 
     // Integrate with tile collisions.
+    this.grounded = this.onGround;
     this.onGround = false;
     const n = Math.max(1, Math.ceil(Math.max(Math.abs(this.vx), Math.abs(this.vy)) * dt / 8));
     for (let i = 0; i < n; i++) {
-      if (this.moveX(this.vx * dt / n)) this.vx = 0;
-      if (this.moveY(this.vy * dt / n)) { if (this.vy > 0) this.onGround = true; this.vy = 0; }
+      if (this.moveX(this.vx * dt / n)) { if (this.mode === 'normal') this.vx = 0; }
+      if (this.moveY(this.vy * dt / n)) { if (this.vy > 0) this.onGround = true; if (this.mode !== 'ceiling') this.vy = 0; }
     }
     if (!this.onGround && this.vy >= 0) {
       const [l, , r, b] = this.box();
-      if (g.map.boxSolid(l, b, r, b + 1.5)) this.onGround = true;
+      if (map.boxSolid(l, b, r, b + 1.5)) this.onGround = true;
+    }
+    if (this.onGround) this.airDashes = 1;
+
+    // Leave wall/ceiling modes when the surface runs out; top out over ledges.
+    if (this.mode === 'wall') {
+      this.wallDir = this.probeWall();
+      if (this.onGround && !this.lastClimbUp) this.setMode('normal');
+      else if (!this.wallDir) {
+        const dir = this.clingDir;
+        this.setMode('normal');
+        if (this.lastClimbUp) {
+          // Pop up exactly high enough to clear the ledge.
+          const rise = Math.max(24, this.y - this.wallTop(dir) + 26);
+          this.vy = -Math.sqrt(2 * GRAVITY * rise); this.vx = dir * 260; this.wallLock = 0.22;
+        }
+      }
+    } else if (this.mode === 'ceiling' && !ceilAbove()) {
+      this.setMode('normal');
     }
     if (this.onGround) this.airDashes = 1;
 
@@ -265,7 +398,8 @@ class Player {
     if (Input.mouse.pressed[2]) this.tentacle.fire(this.aim.x, this.aim.y);
     this.tentacle.update(dt, g);
     this.tentacle.applyRope(g);
-    if (Input.hit('KeyE')) this.tentacle.useE(g);
+    this.tentacle.updateEat(dt, g, Input.down('KeyE'), Input.hit('KeyE'));
+    this.biteT -= dt;
 
     // Weapons.
     this.cool -= dt;
@@ -350,11 +484,27 @@ class Player {
   // Pose the sprite puppet (art pixels, facing right, then mirrored).
   computePose() {
     const f = this.facing;
-    this.flip = f;
+    this.flip = this.mode === 'ceiling' ? -f : f;
     const P = REST_ART.map((o) => [o[0], o[1]]);
     const t = this.t;
-    const running = this.onGround && Math.abs(this.vx) > 20;
-    if (running) {
+    const running = this.onGround && Math.abs(this.vx) > 20 && !this.squeezed;
+    const flat = this.squeezed || this.mode === 'ceiling';
+    if (flat) {
+      // Low crawl (floor) or upside-down crawl (ceiling): limbs paddle as we move.
+      const ph = this.mode === 'ceiling' ? this.climbPhase : this.runPhase;
+      const s = Math.sin(ph), c = Math.cos(ph);
+      P[R.PELVIS] = [-6, -4.5]; P[R.NECK] = [6, -6]; P[R.HEAD] = [11, -8.5];
+      P[R.ELBOW_B] = [9 - s * 1.5, -3]; P[R.HAND_B] = [12 - s * 3, -0.5 - Math.max(0, -c) * 2];
+      P[R.KNEE_F] = [-9 + s * 2, -2]; P[R.FOOT_F] = [-15 + s * 2, -0.5 - Math.max(0, c) * 1.5];
+      P[R.KNEE_B] = [-9 - s * 2, -2]; P[R.FOOT_B] = [-15 - s * 2, -0.5 - Math.max(0, -c) * 1.5];
+    } else if (this.mode === 'wall') {
+      // Climbing: body flat to the wall, hands and feet alternate.
+      const s = Math.sin(this.climbPhase);
+      P[R.PELVIS] = [0.5, -19]; P[R.NECK] = [1.5, -31]; P[R.HEAD] = [2.5, -37];
+      P[R.ELBOW_B] = [4, -34 + s * 2]; P[R.HAND_B] = [5, -40 + s * 3];
+      P[R.KNEE_F] = [4.5, -12 - s * 2]; P[R.FOOT_F] = [4.5, -5 - s * 2.5];
+      P[R.KNEE_B] = [4, -10 + s * 2]; P[R.FOOT_B] = [4, -2 + s * 2.5];
+    } else if (running) {
       const ph = this.runPhase;
       for (const [k, ft, p] of [[R.KNEE_F, R.FOOT_F, ph], [R.KNEE_B, R.FOOT_B, ph + Math.PI]]) {
         const fx = Math.sin(p) * 5 * sign(this.vx) * f, lift = Math.max(0, Math.cos(p)) * 3.5;
@@ -373,8 +523,13 @@ class Player {
       P[R.NECK][1] += Math.sin(t * 2.2) * 0.3;
       P[R.HEAD][1] += Math.sin(t * 2.2 - 0.4) * 0.4;
     }
+    if (this.biteT > 0) { P[R.HEAD][0] += 2; P[R.HEAD][1] += 1; P[R.NECK][0] += 1; }
     const pts = this.pts;
-    for (let i = 0; i < pts.length; i++) { pts[i].x = this.x + P[i][0] * PX * f; pts[i].y = this.y + P[i][1] * PX; }
+    const top = this.y - this.h;
+    for (let i = 0; i < pts.length; i++) {
+      pts[i].x = this.x + P[i][0] * PX * f;
+      pts[i].y = this.mode === 'ceiling' ? top - P[i][1] * PX : this.y + P[i][1] * PX;
+    }
     // Front arm aims the gun.
     const N = pts[R.NECK];
     const a = this.aim, rc = this.recoil * 2 * PX;
@@ -387,6 +542,8 @@ class Player {
       const ux = (tn.tip.x - N.x) / d, uy = (tn.tip.y - N.y) / d;
       pts[R.ELBOW_B].x = N.x + ux * 5.5 * PX; pts[R.ELBOW_B].y = N.y + uy * 5.5 * PX + PX;
       pts[R.HAND_B].x = N.x + ux * 11 * PX; pts[R.HAND_B].y = N.y + uy * 11 * PX;
+    } else if (flat || this.mode === 'wall') {
+      // keep the crawling/climbing back arm from the pose
     } else if (running) {
       const sw = Math.sin(this.runPhase) * 3 * PX;
       pts[R.ELBOW_B].x = N.x + sw * 0.5; pts[R.ELBOW_B].y = N.y + 6 * PX;
@@ -422,6 +579,11 @@ class Player {
     if (this.hurtT > 0) for (const q of this.pieces) q.raster(fb, HURT_TINT, 0.6);
     else if (this.god) for (const q of this.pieces) if (Math.sin(this.t * 6) > 0.7) q.raster(fb, GOD_TINT, 0.25);
     this.renderGun(fb);
+    if (this.biteT > 0) {
+      const m = this.mouth(), mx = m.x / PX, my = m.y / PX;
+      fb.put(mx, my, JAW_C); fb.put(mx + this.facing, my - 1, JAW_C); fb.put(mx + this.facing, my + 1, JAW_C);
+      fb.put(mx + this.facing * 2, my - 1, TEETH_C); fb.put(mx + this.facing * 2, my + 1, TEETH_C);
+    }
   }
 
   renderGun(fb) {
@@ -458,4 +620,5 @@ class Player {
 }
 
 const GUN_DARK = hexc('#23272e'), GUN_MID = hexc('#5d6674'), GUN_WHITE = hexc('#e8edf4'), GUN_EDGE = hexc('#4a5566');
+const JAW_C = hexc('#3b0006'), TEETH_C = hexc('#f1e6cf');
 const STOCK_C = hexc('#6b4226'), DASH_GHOST = hexc('#ff4f6d'), HURT_TINT = hexc('#ff2020'), GOD_TINT = hexc('#ffe36b');

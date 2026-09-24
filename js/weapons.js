@@ -228,6 +228,15 @@ class Tentacle {
     if (this.state !== 'attached') return;
     const pl = this.pl;
     const o = this.origin();
+    if (this.holding() && this.eating) {
+      // Reel the morsel in to the mouth.
+      const m = this.pl.mouth(), p = this.target;
+      let dx = (m.x - p.x) * 0.25, dy = (m.y - p.y) * 0.25;
+      const dl = Math.hypot(dx, dy);
+      if (dl > 16) { dx *= 16 / dl; dy *= 16 / dl; }
+      p.x += dx; p.y += dy;
+      return;
+    }
     if (this.holding()) {
       const m = game.mouseWorld();
       const md = dist(o.x, o.y, m.x, m.y) || 1;
@@ -254,45 +263,75 @@ class Tentacle {
     if (vr < 0) { pl.vx -= nx * vr; pl.vy -= ny * vr; }
   }
 
-  // E while holding: rip the grabbed part off, or devour a loose part/corpse.
-  useE(game) {
-    if (!this.holding() && !(this.state === 'attached' && this.target && this.target.pin)) return false;
-    const p = this.target, rag = p.rag;
-    const npc = rag.npc;
+  // E: rip a living (or pinned) part off. Hold E on a loose part or corpse to
+  // pull it to your mouth and eat it bite by bite.
+  updateEat(dt, game, held, pressed) {
+    this.biteT = (this.biteT || 0) - dt;
+    this.eating = false;
+    if (this.state !== 'attached' || !this.target) return;
+    const p = this.target, rag = p.rag, npc = rag.npc;
     const living = npc && npc.alive && npc.main.has(p);
-    const d = dist(p.x, p.y, this.pl.x, this.pl.y - 60);
-    if (living || d > 130) {
-      // Rip: tear the piece that hangs off this particle.
-      const piece = rag.pieces.find((q) => q.b === p) || rag.pieces.find((q) => q.a === p);
-      if (!piece) return false;
-      rag.tear(piece);
-      if (npc && npc.alive) { npc.damage(20, 'rip'); npc.say('AAAAAAAAH!', 1.2); }
-      game.shake(2);
-      return true;
-    }
-    // Devour everything connected to the held part.
+    if (pressed && (living || p.pin)) { this.rip(game); return; }
+    if (!held || living || p.pin) return;
+    this.eating = true;
+    const mouth = this.pl.mouth();
+    if (this.biteT > 0 || dist(p.x, p.y, mouth.x, mouth.y) > 75) return;
+    this.biteT = 0.24;
+    this.bite(game, mouth);
+  }
+
+  rip(game) {
+    const p = this.target, rag = p.rag, npc = rag.npc;
+    const piece = rag.pieces.find((q) => q.b === p) || rag.pieces.find((q) => q.a === p);
+    if (!piece) return;
+    if (p.pin) { p.pin = null; for (const s of game.spikes) s.carried = s.carried.filter((c) => c !== p); }
+    rag.tear(piece);
+    if (npc && npc.alive) { npc.damage(20, 'rip'); npc.say('AAAAAAAAH!', 1.2); }
+    game.shake(2);
+  }
+
+  bite(game, mouth) {
+    const p = this.target, rag = p.rag;
     const island = rag.component(p);
-    let eaten = 0;
-    rag.pieces = rag.pieces.filter((q) => {
-      if (!island.has(q.a)) return true;
-      eaten += q.count;
-      const F = q.frame();
-      for (let k = 0; k < 6; k++) {
-        const idx = randi(0, q.col.length - 1);
-        if (q.col[idx]) { const [x, y] = q.cellWorld(idx, F); game.blood.spawn(x, y, rand(-200, 200), rand(-300, 0), 2.5, q.col[idx]); }
-      }
-      return false;
-    });
-    for (const s of game.spikes) if (s.state === 'lodged' && island.has(s.host)) s.state = 'dead';
-    for (const q of island) { q.pin = null; q.held = false; }
-    rag.refreshTopology('eaten', p.x, p.y);
-    game.blood.burst(p.x, p.y, 40, 350);
-    const heal = Math.min(45, Math.round(eaten / 12));
+    // Chew on the piece of this morsel that's closest to the mouth.
+    let best = null, bd = Infinity;
+    for (const q of rag.pieces) {
+      if (!island.has(q.a)) continue;
+      const d = dist2(q.bc.x, q.bc.y, mouth.x, mouth.y);
+      if (d < bd) { bd = d; best = q; }
+    }
+    if (!best) { this.release(false); return; }
+    const F = best.frame();
+    let [gi, gj] = best.toGrid(p.x, p.y, F);
+    // Bite the filled pixel nearest the held point.
+    let bestIdx = -1, bi = Infinity;
+    for (let idx = 0; idx < best.col.length; idx++) {
+      if (!best.col[idx]) continue;
+      const d = ((idx % best.w) + 0.5 - gi) ** 2 + (((idx / best.w) | 0) + 0.5 - gj) ** 2;
+      if (d < bi) { bi = d; bestIdx = idx; }
+    }
+    if (bestIdx < 0) return;
+    gi = (bestIdx % best.w) + 0.5; gj = ((bestIdx / best.w) | 0) + 0.5;
+    const [bx, by] = best.cellWorld(bestIdx, F);
+    rag.resetZones();
+    const removed = rag.burn(best, gi, gj, 2.3, 1, 0.05);
+    if (!removed) return;
+    const heal = Math.max(1, Math.round(removed * 0.25));
     this.pl.heal(heal);
-    game.fx.text(p.x, p.y - 20, '+' + heal + ' DEVOURED', '#9dff7a');
-    Sfx.squelch(); Sfx.rip();
-    this.release(false);
-    return true;
+    this.pl.biteT = 0.15;
+    game.blood.spray(bx, by, rand(-1, 1), -1, 8 + removed, 260, 1.2);
+    game.fx.text(mouth.x, mouth.y - 30, '+' + heal, '#9dff7a');
+    Sfx.bite();
+    // Keep chewing the same body: grab the next nearest bit if this one's gone.
+    if (!rag.parts.includes(p)) {
+      let next = null, nd = 140 * 140;
+      for (const q of rag.parts) {
+        if (q.pin) continue;
+        const d = dist2(q.x, q.y, mouth.x, mouth.y);
+        if (d < nd) { nd = d; next = q; }
+      }
+      if (next) this.target = next; else this.release(false);
+    }
   }
 
   render(fb) {

@@ -21,13 +21,15 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 
 | Input | Action |
 |---|---|
-| A / D | move |
-| W / Space | jump. Also wall jump (jump while touching a wall) and leap off the tentacle |
-| Shift | dash (hold WASD to pick a direction). One air dash per jump; it rams NPCs |
+| A / D | move. You vault ledges up to about 2 tiles and squeeze through low gaps automatically |
+| Space | jump, wall jump off a wall you're clinging to, or let go of a ceiling |
+| W | jump from the ground. In the air: grab a wall or ceiling. On a wall: climb up |
+| S | on a wall: climb down. On the ground: squeeze low. On a ceiling: drop |
+| Shift | dash (hold WASD to pick a direction). One air dash per jump, usable off walls; it rams NPCs |
 | Mouse | aim |
 | LMB | fire the current weapon |
 | RMB (hold) | tentacle: latch onto terrain and zip or swing, or grab a body and swing it with the mouse (release to throw) |
-| E (while holding) | rip the grabbed part off, or devour a loose part or corpse to heal |
+| E / hold E (while holding) | rip the grabbed part off a living NPC, or hold E to pull a loose part or corpse to your mouth and eat it bite by bite to heal |
 | 1-5 / Q / mouse wheel | harpoon / laser / shotgun / saw / bile bomb |
 | F | slow motion |
 | G / T / Y | spawn a guard / scientist / armed soldier at the cursor |
@@ -86,9 +88,16 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
   - **Bile bomb**: a lobbed acid sac that bursts, blowing chunks off anyone nearby and
     splattering green bile.
 - **Tentacle**: latch onto terrain to zip and swing, or grab any body part and swing it with the
-  mouse to slam or throw it. E rips the grabbed part off, or devours a loose part or corpse to
-  heal. Carrion-style.
-- **Movement**: wall slide and wall jump, and a dash with afterimages that bowls people over.
+  mouse to slam or throw it. E rips the grabbed part off a living NPC. Hold E on a loose part
+  or corpse to pull it to your mouth and chew through it bite by bite, healing as you go.
+- **Movement ("flesh-cling")**:
+  - **Walls and ceilings:** push into a wall in mid-air to stick to it, then climb with W and
+    S. Reaching the top pops you over the ledge. Hold W against a ceiling to crawl along it
+    upside down.
+  - **Ledges and gaps:** running into a ledge vaults it automatically. You compress to crawl
+    through low gaps, like the vent under the first room.
+  - **Dash and wall jump:** there's also a dash and a wall jump.
+- **Kill slow-down**: killing a soldier who was attacking you briefly slows time.
 - **NPCs** (`js/npc.js`):
   - **Security guards** (helmet, visor, uniform) wave at you.
   - **Scientists** (lab coat, goggles) patrol, panic, flee and cower.

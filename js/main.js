@@ -43,7 +43,7 @@
         window.game = game;
         Input.endStep();
       }
-      acc += real * game.timeScale;
+      acc += real * game.frameTimeScale(real);
       let steps = 0;
       while (acc >= DT && steps < 10) {
         game.step(DT);
