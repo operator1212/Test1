@@ -3,8 +3,11 @@
 
 const ART_VIEW_H = 270;
 const KILL_SLOW_TIME = 0.6;
-const CREATURES = () => [Player, Worm, Eye, Slime, Crystal];      // target vertical resolution in art pixels
+// The playable escapees, in Tab order. (Subject 09, the humanoid Player base
+// class, is kept for later but not in the cycle.)
+const CREATURES = () => [Worm, Eye, Slime, Crystal, Swarm];
 const SOLVER_ITERS = 8;
+const WBOX = 54;           // HUD weapon box stride (art px)
 
 class Game {
   constructor(canvas) {
@@ -40,10 +43,10 @@ class Game {
       if (s.type === 'P') this.spawn = { x: s.x, y: s.y - 0.01 };
       else this.spawnNPC({ S: 'scientist', A: 'soldier' }[s.type] || 'guard', s.x, s.y);
     }
-    this.player = new Player(this, this.spawn.x, this.spawn.y);
+    this.player = new (CREATURES()[0])(this, this.spawn.x, this.spawn.y);
     this.cam = { x: this.spawn.x, y: this.spawn.y - 200 };
     this.resize();
-    this.message('SUBJECT 09 - ESCAPE TEST IN PROGRESS', '#9fd0ff');
+    this.message('ESCAPE IN PROGRESS - TAB SWITCHES SUBJECT', '#9fd0ff');
   }
 
   spawnNPC(type, x, groundY) {
@@ -258,7 +261,7 @@ class Game {
     const list = CREATURES();
     const C = list[(list.indexOf(old.constructor) + 1) % list.length];
     const p = new C(this, old.x, old.y + old.rideH);
-    p.hp = old.hp; p.god = old.god; p.vx = old.vx; p.vy = old.vy;
+    p.hp = p.maxHp * clamp(old.hp / old.maxHp, 0.05, 1); p.god = old.god; p.vx = old.vx; p.vy = old.vy;
     p.up = { ...old.up };
     this.player = p;
     this.fx.flash(p.x, p.y, 60, '#ff9aa0');
@@ -385,10 +388,12 @@ class Game {
   npcShoot(npc) {
     const H = npc.rag.joint[R.HAND_F], pl = this.player;
     const tx = pl.cx, ty = pl.cy;
-    const a = Math.atan2(ty - H.y, tx - H.x) + rand(-0.06, 0.06);
+    // Harder to hit a creature that's moving fast.
+    const spread = 0.04 + Math.min(0.14, Math.hypot(pl.vx, pl.vy) / 2600);
+    const a = Math.atan2(ty - H.y, tx - H.x) + rand(-spread, spread);
     const sp = 950;
     const mx = H.x + Math.cos(a) * 12, my = H.y + Math.sin(a) * 12;
-    this.shots.push(new Bullet(mx, my, Math.cos(a) * sp, Math.sin(a) * sp, 'npc', 9, 'bullet', npc.rag));
+    this.shots.push(new Bullet(mx, my, Math.cos(a) * sp, Math.sin(a) * sp, 'npc', 11, 'bullet', npc.rag));
     npc.lastShotT = this.time;
     this.fx.flash(mx, my, 14, '#ffe7a0');
     Sfx.pistol();
@@ -564,22 +569,23 @@ class Game {
 
     // Weapons.
     pl.weapons.forEach((wpn, i) => {
-      const x = 4 + i * 47, y = H - 20;
-      panel(x, y, 44, 16, pl.weapon === i ? 'rgba(47,95,191,0.92)' : 'rgba(12,20,38,0.78)');
-      pixelText(g, (i + 1) + ' ' + wpn.name, x + 3, y + 3, '#ffffff');
-      g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(x + 3, y + 11, 38, 2);
+      const x = 4 + i * WBOX, y = H - 20;
+      panel(x, y, WBOX - 3, 16, pl.weapon === i ? 'rgba(47,95,191,0.92)' : 'rgba(12,20,38,0.78)');
+      const am = wpn.kind in pl.ammo ? ' ' + pl.ammo[wpn.kind] : wpn.kind === 'laser' ? ' ' + Math.round(pl.battery * 100) : '';
+      pixelText(g, (i + 1) + ' ' + wpn.name + am, x + 3, y + 3, wpn.kind in pl.ammo && !pl.ammo[wpn.kind] ? '#ff8a8a' : '#ffffff');
+      g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(x + 3, y + 11, WBOX - 9, 2);
       if (wpn.kind === 'laser') {
         g.fillStyle = pl.overheat ? '#ff3b2f' : `hsl(${lerp(190, 10, pl.heat)},100%,60%)`;
-        g.fillRect(x + 3, y + 11, Math.round(38 * pl.heat), 2);
+        g.fillRect(x + 3, y + 11, Math.round((WBOX - 9) * pl.heat), 2);
       } else {
         const r = pl.weapon === i ? clamp(1 - pl.cool / wpn.cool, 0, 1) : 1;
-        g.fillStyle = '#d7dce4'; g.fillRect(x + 3, y + 11, Math.round(38 * r), 2);
+        g.fillStyle = '#d7dce4'; g.fillRect(x + 3, y + 11, Math.round((WBOX - 9) * r), 2);
       }
     });
-    const ax = 4 + pl.weapons.length * 47;
+    const ax = 4 + pl.weapons.length * WBOX;
     panel(ax, H - 20, 76, 16);
     const tn = pl.tentacle;
-    const ts = !pl.hasTentacle ? 'NO GRAPPLE' : tn.state === 'attached' ? (tn.eating ? 'EATING' : tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
+    const ts = pl.rmbLabel ? pl.rmbLabel() : !pl.hasTentacle ? 'NO GRAPPLE' : tn.state === 'attached' ? (tn.eating ? 'EATING' : tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
     pixelText(g, ts, ax + 3, H - 17, '#ffb3b8');
     g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(ax + 3, H - 9, 70, 2);
     g.fillStyle = '#7fe0ff'; g.fillRect(ax + 3, H - 9, Math.round(70 * clamp(1 - pl.dashCool / 0.5, 0, 1)), 2);
@@ -596,12 +602,13 @@ class Game {
     // Help.
     if (this.showHelp) {
       const lines = [
-        ['WASD', 'MOVE ALONG FLOORS, WALLS, CEILINGS'], ['INTO A WALL', 'RUNS UP IT AND OVER THE TOP'],
-        ['AWAY', 'PUSH OFF A WALL/CEILING TO LET GO'], ['SPACE', 'LEAP OFF WHATEVER YOU HOLD'],
+        ['WASD', 'MOVE ALONG FLOORS AND WALLS'], ['INTO A WALL', 'RUNS UP IT AND OVER THE TOP'],
+        ['AWAY', 'PUSH OFF A WALL TO LET GO'], ['SPACE', 'LEAP OFF WHATEVER YOU HOLD'],
         ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
-        ['LMB', 'FIRE / CREATURE ATTACK (SLOT 1)'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
-        ['SWINGING', 'FLICK MOUSE, A/D PUMP, W/S ROPE'],
-        ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION (USES FOCUS)'],
+        ...(pl.constructor.help || [['LMB', 'FIRE / CREATURE ATTACK (SLOT 1)']]),
+        ...(pl.hasTentacle ? [['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'], ['SWINGING', 'FLICK MOUSE, A/D PUMP, W/S ROPE'],
+          ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD']] : []),
+        ['2-6 Q WHEEL', 'STOLEN GUNS (LIMITED AMMO)'], ['F', 'SLOW MOTION (USES FOCUS)'],
         ['TAB', 'SWITCH CREATURE'], ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
         ['X / R', 'CLEAR HARPOONS / RESET'], ['H', 'HIDE HELP'],
       ];

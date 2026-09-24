@@ -9,34 +9,39 @@
 // carry them in your mouth before biting down.
 'use strict';
 
-const BITE = { name: 'BITE', cool: 0, kind: 'bite' };
+const SWALLOW = { name: 'SWALLOW', cool: 0, kind: 'swallow' };
 const WORM_C = {
   out: hexc('#24080f'), dark: hexc('#5e1d2c'), mid: hexc('#9c3f52'), light: hexc('#d27684'),
   belly: hexc('#e2ab9c'), jaw: hexc('#efe0c4'), jawD: hexc('#a8987c'), eye: hexc('#ffe14a'), mouth: hexc('#30000a'),
+  gum: hexc('#c9566a'), throat: hexc('#5a0f1f'), tooth: hexc('#fff4de'),
 };
 const WORM_HEAD_R = 4.4;        // art px at size 1
 const WORM_SPACING = 7.5;       // world units between segments at size 1
-const WORM_MAX_SIZE = 2.4;
-const WORM_CATCH_SIZE = 1.6;    // big enough to hold a whole person in the jaws
+const WORM_SIZE = 1.35;         // fixed for now (growth is off)
+const GULP_TIME = 0.8;          // a victim must be held inside this long before digesting
 
 class Worm extends Player {
   static rideH = 14;
-  static weaponList = [BITE, ...WEAPONS];
+  static weaponList = [SWALLOW, ...WEAPONS];
   static creatureName = 'WORM';
   static hasTentacle = false;
+  static help = [['LMB HOLD', 'OPEN MOUTH, SWALLOW WHOEVER'], ['RELEASE', 'DIGEST (TOO SOON: SPITS OUT)']];
 
   constructor(game, x, feetY) {
     super(game, x, feetY);
-    this.size = 1;
+    this.size = WORM_SIZE;
     this.segN = 12;
+    this.gulp = null;           // { npc, t, map: [{ p, seg }] } someone inside the body
+    this.digestT = 0;
+    this.bulge = [];
     this.path = [];             // head history, newest first: {x, y, ux, uy}
     this.segs = [];
     this.jaw = 0;               // 0 closed .. 1 wide open
     this.chompCool = 0;
-    this.caught = null;         // { npc, p } held in the mouth
     this.headDir = { x: 1, y: 0 };
     this.hump = 0;
     this.applySize();
+    this.hp = this.maxHp;
     this.resetBody();
   }
 
@@ -45,19 +50,12 @@ class Worm extends Player {
     this.coreR = WORM_HEAD_R * PX * s * 0.85;
     this.rideH = Math.max(this.coreR + 3, WORM_HEAD_R * PX * s + 2);
     this.spacing = WORM_SPACING * Math.pow(s, 0.7);
-    this.maxHp = Math.round(100 + (s - 1) * 90);
-    this.segN = Math.min(22, 12 + Math.floor(this.mass / 260));
+    this.maxHp = 130;
+    this.segN = 12;
   }
 
-  grow(px = 0) {
-    const before = this.size;
-    this.mass += px;
-    this.size = Math.min(WORM_MAX_SIZE, 1 + this.mass / 900);
-    this.applySize();
-    if (Math.floor(before * 5) !== Math.floor(this.size * 5)) {
-      this.game.fx.text(this.x, this.y - 40, this.size >= WORM_CATCH_SIZE && before < WORM_CATCH_SIZE ? 'BIG ENOUGH TO SWALLOW' : 'GROWING', '#ffb3b8');
-    }
-  }
+  // Growth is off for now: eating only heals.
+  grow() {}
 
   resetBody() {
     this.path = [{ x: this.x, y: this.y, ux: 0, uy: -1, air: false }];
@@ -70,7 +68,7 @@ class Worm extends Player {
   headR() { return WORM_HEAD_R * this.size; }
   segR(i) {
     const f = i / Math.max(1, this.segs.length - 1);
-    return (lerp(3.7, 1.5, f) + Math.sin(f * Math.PI) * 0.4) * this.size;
+    return (lerp(3.7, 1.5, f) + Math.sin(f * Math.PI) * 0.4) * this.size * (1 + (this.bulge[i] || 0) * 0.8);
   }
 
   get cx() { return this.segs && this.segs.length ? this.segs[Math.min(2, this.segs.length - 1)].x : this.x; }
@@ -103,7 +101,7 @@ class Worm extends Player {
 
   pushBodies(npcs) {
     if (this.dead) return;
-    const held = this.caught ? this.caught.npc : null;
+    const held = this.gulp ? this.gulp.npc : null;
     for (const npc of npcs) {
       if (npc === held) continue;
       for (const p of npc.rag.parts) {
@@ -120,9 +118,8 @@ class Worm extends Player {
   }
 
   respawn() {
-    this.dropCaught();
+    this.spit(false);
     super.respawn();
-    this.mass = 0; this.size = 1;
     this.applySize();
     this.hp = this.maxHp;
     this.resetBody();
@@ -130,7 +127,7 @@ class Worm extends Player {
 
   die() {
     const g = this.game;
-    this.dropCaught();
+    this.spit(false);
     super.die();
     for (const s of this.segs) {
       g.blood.burst(s.x, s.y, 8, 380);
@@ -138,114 +135,113 @@ class Worm extends Player {
     }
   }
 
-  dropCaught() {
-    if (!this.caught) return;
-    const { npc } = this.caught;
-    npc.grabbed = false;
-    if (npc.alive) npc.knock(1.5);
-    this.caught = null;
-  }
-
-  // ---------------------------------------------------------------- bite
-  // Hold: jaws open (big worms catch whoever is in them). Release: snap shut.
+  // ---------------------------------------------------------------- swallow
+  // Hold LMB: the mouth opens and slows you down. Anyone who gets in it is
+  // pulled inside the body (the worm covers them, bulging). Keep holding for
+  // GULP_TIME, then release to digest them. Release too early and you spit them
+  // out. With nobody inside, releasing just snaps the jaws.
   natural(dt, held, pressed, released) {
-    this.chompCool -= dt;
-    this.snapT = this.snapT || 0;
-    this.jaw = this.snapT > 0 ? this.jaw : held ? Math.min(1, this.jaw + dt * 7) : Math.max(0, this.jaw - dt * 14);
     const g = this.game, m = this.mouth();
-    if (this.caught) {
-      const { npc, p } = this.caught;
-      if (!npc.rag.parts.includes(p) || p.pin) this.dropCaught();
+    this.chompCool -= dt;
+    this.digestT -= dt;
+    const canOpen = this.digestT <= 0;
+    this.jaw = held && canOpen ? Math.min(1, this.jaw + dt * 5) : Math.max(0, this.jaw - dt * 12);
+    this.moveSpeed = held && canOpen ? (this.gulp ? MOVE_SPEED * 0.45 : MOVE_SPEED * 0.7) : MOVE_SPEED * 0.95;
+
+    if (held && canOpen && !this.gulp && this.jaw > 0.6) {
+      const hit = this.victimNear(m, WORM_HEAD_R * this.size * PX * 1.4 + 8);
+      if (hit) this.startGulp(hit);
+    }
+    if (this.gulp) {
+      const G = this.gulp;
+      G.t += dt;
+      if (!G.npc.rag.pieces.length) { this.gulp = null; }
       else {
-        // Carry them in the jaws, still kicking.
-        let dx = (m.x - p.x) * 0.35, dy = (m.y - p.y) * 0.35;
-        const dl = Math.hypot(dx, dy);
-        if (dl > 20) { dx *= 20 / dl; dy *= 20 / dl; }
-        p.x += dx; p.y += dy;
-        npc.grabbed = true;
-        npc.stun = Math.max(npc.stun, 0.5);
+        // Pull every part of them inside, spread along the front of the body.
+        const pull = G.t < 0.2 ? 0.12 : 0.28;
+        for (const e of G.map) {
+          if (!G.npc.rag.parts.includes(e.p) || e.p.pin) continue;
+          const sg = this.segs[Math.min(e.seg, this.segs.length - 1)];
+          e.p.x = lerp(e.p.x, sg.x, pull); e.p.y = lerp(e.p.y, sg.y, pull);
+          e.p.px = lerp(e.p.px, e.p.x, 0.5); e.p.py = lerp(e.p.py, e.p.y, 0.5);
+        }
+        G.npc.grabbed = true;
+        G.npc.stun = Math.max(G.npc.stun, 0.4);
+        if (!held) this.finishGulp(G.t >= GULP_TIME);
       }
+    } else if (released && this.chompCool <= 0 && canOpen) {
+      // Empty snap: a small bite.
+      this.chompCool = 0.6;
+      this.biteT = 0.15;
+      this.vx += this.aim.x * 200; this.vy += this.aim.y * 200;
+      const removed = g.burnAt(m.x + this.headDir.x * 6, m.y + this.headDir.y * 6, 1.8, 1, 0.05, 'bite', 0.25, this.aim.x, this.aim.y);
+      if (removed) { this.feed(removed * 0.5); g.blood.spray(m.x, m.y, -this.aim.x, -this.aim.y, 4 + removed, 260, 1); }
+      Sfx.bite();
     }
-    if (held && this.jaw > 0.5 && !this.caught && this.size >= WORM_CATCH_SIZE) {
-      const hit = this.partNear(m, this.headR() * PX * 1.6 + 14);
-      if (hit && (!hit.npc.alive || hit.npc.main.has(hit.p))) {
-        this.caught = hit;
-        hit.npc.grabbed = true;
-        if (hit.npc.alive) hit.npc.say(pick(['NO NO NO', 'LET GO!', 'AAAAH!']), 1.2);
-        Sfx.latch();
-      }
-    }
-    if (released && this.chompCool <= 0 && this.snapT <= 0) {
-      // Lunge first; the jaws close a beat later, once the head has arrived.
-      const lunge = this.caught ? 150 : 520;
-      this.vx += this.aim.x * lunge; this.vy += this.aim.y * lunge;
-      this.detachT = 0.12;
-      this.snapT = 0.09;
-      Sfx.whip();
-    }
-    if (this.snapT > 0) { this.snapT -= dt; if (this.snapT <= 0) this.chomp(); }
   }
 
-  partNear(m, r) {
+  victimNear(m, r) {
     let best = null, bd = r * r;
-    for (const npc of this.game.npcs) for (const p of npc.rag.parts) {
-      const d = dist2(m.x, m.y, p.x, p.y);
-      if (d < bd && !p.pin) { bd = d; best = { npc, p }; }
+    for (const npc of this.game.npcs) {
+      if (!npc.rag.pieces.length) continue;
+      for (const p of npc.rag.parts) {
+        if (p.pin) continue;
+        const d = dist2(m.x, m.y, p.x, p.y);
+        if (d < bd) { bd = d; best = npc; }
+      }
     }
     return best;
   }
 
-  chomp() {
-    const g = this.game;
-    this.chompCool = 0.3;
-    this.biteT = 0.15;
-    this.jaw = 0;
+  startGulp(npc) {
     const m = this.mouth();
-    const centres = [m];
-    const crushed = this.caught && this.caught.npc.rag.parts.includes(this.caught.p) ? this.caught.npc : null;
-    if (crushed) centres.push({ x: this.caught.p.x, y: this.caught.p.y });
-    const R = this.mouthR() / PX;
-    let ate = 0;
-    const hurt = new Map();
-    for (const npc of g.npcs) {
-      const rag = npc.rag;
-      rag.resetZones();
-      for (const c of centres) for (const q of rag.pieces.slice()) {
-        if (!rag.pieces.includes(q)) continue;
-        if (dist(c.x, c.y, q.bc.x, q.bc.y) > q.bc.r + R * PX) continue;
-        const [gi, gj] = q.toGrid(c.x, c.y, q.frame());
-        if (gi < -R || gj < -R || gi > q.w + R || gj > q.h + R) continue;
-        const living = npc.alive && npc.main.has(q.a);
-        const removed = rag.burn(q, gi, gj, R, 1, 0.05);
-        if (!removed) continue;
-        ate += removed;
-        if (living) hurt.set(npc, (hurt.get(npc) || 0) + removed);
-        g.blood.spray(c.x, c.y, -this.aim.x, -this.aim.y - 0.4, 6 + removed, 320, 1.1);
-      }
-      const n = hurt.get(npc);
-      if (n) {
-        npc.addBleed(n);
-        // Biting down on someone held in the jaws is a crushing, usually fatal bite.
-        npc.damage(n * 0.7 + 10 * this.size + (npc === crushed ? 45 * this.size : 0), 'bite');
-        npc.applyZones(rag.zoneHits, 'bite', m.x, m.y);
-        npc.hitReact(this.aim.x, this.aim.y, 1.2);
-        if (npc.alive && !npc.bubble) npc.say(pick(PAIN_LINES), 1.2);
-      }
-    }
-    this.dropCaught();
-    Sfx.bite();
-    if (ate) {
-      if (ate > 40) Sfx.rip();
-      g.shake(Math.min(3, ate / 25));
-      this.heal(ate * 0.25);
-      this.grow(ate);
-      if (this.hp > this.maxHp) this.hp = this.maxHp;
+    // Nearest parts go deepest first... actually the head end goes in first.
+    const parts = npc.rag.parts.filter((p) => !p.pin).sort((a, b) => dist2(a.x, a.y, m.x, m.y) - dist2(b.x, b.y, m.x, m.y));
+    const K = Math.min(this.segs.length - 2, 6);
+    this.gulp = { npc, t: 0, map: parts.map((p, i) => ({ p, seg: 1 + Math.floor(i / Math.max(1, parts.length) * K) })) };
+    npc.grabbed = true;
+    if (npc.alive) npc.say(pick(['NO NO NO', 'HELP!!', 'AAAAAH!']), 1.2);
+    Sfx.squelch();
+  }
+
+  finishGulp(digest) {
+    const G = this.gulp, g = this.game;
+    this.gulp = null;
+    const npc = G.npc;
+    npc.grabbed = false;
+    const m = this.mouth();
+    if (digest) {
+      // Gone: killed and digested.
+      if (npc.alive) { npc.lastHitBy = 'swallowed'; npc.die('swallowed'); }
+      npc.rag.pieces = [];
+      npc.rag.refreshTopology('eaten', m.x, m.y);
+      for (const s of g.spikes) if (s.state === 'lodged' && s.host.rag === npc.rag) s.state = 'dead';
+      g.blood.spray(m.x, m.y, this.headDir.x, this.headDir.y - 0.5, 40, 380, 0.7);
+      g.fx.text(m.x, m.y - 30, 'DIGESTED', '#ff5a64');
+      this.heal(30);
+      this.digestT = 2;
+      this.biteT = 0.3;
+      Sfx.bite(); Sfx.rip();
+      g.shake(2);
+    } else {
+      // Spat out, hurt but alive.
+      for (const p of npc.rag.parts) p.impulse(this.headDir.x * 420 + rand(-80, 80), this.headDir.y * 420 - 150);
+      if (npc.alive) { npc.damage(15, 'bite'); npc.knock(1.5); }
+      g.blood.spray(m.x, m.y, this.headDir.x, this.headDir.y, 12, 300, 0.6);
+      Sfx.squelch();
     }
   }
+
+  spit(hurt) { if (this.gulp) this.finishGulp(false); }
 
   // ---------------------------------------------------------------- body
   computePose(dt) {
     if (!this.segs) return;
+    // Bulge where a swallowed victim sits.
+    for (let i = 0; i < this.segN; i++) {
+      const want = this.gulp && this.gulp.map.some((e) => e.seg === i) ? 1 : 0;
+      this.bulge[i] = lerp(this.bulge[i] || 0, want, dt ? 1 - Math.exp(-dt * 6) : 1);
+    }
     const sp = Math.hypot(this.vx, this.vy);
     // Head faces where you aim when the mouth or a gun is in use, else where it's going.
     const aiming = this.jaw > 0.05 || this.wkind() !== 'bite';
@@ -328,24 +324,32 @@ class Worm extends Player {
       fb.disc(p.x - p.nx * p.r * 0.45, p.y - p.ny * p.r * 0.45, p.r * 0.5, WORM_C.belly);
       fb.disc(p.x + p.nx * p.r * 0.45, p.y + p.ny * p.r * 0.45, p.r * 0.3, WORM_C.light);
     }
-    // Head: jaws (open while LMB is held), mouth, eye cluster.
+    // Head: a round lamprey maw that opens into pink flesh ringed with teeth.
     const h = pts[0], d = this.headDir, z = this.size;
     const px = -d.y, py = d.x;
-    const fx = h.x + d.x * h.r * 0.7, fy = h.y + d.y * h.r * 0.7;
-    if (this.jaw > 0.1) fb.disc(fx + d.x, fy + d.y, (1 + this.jaw * 1.8) * z, WORM_C.mouth);
-    const spread = 0.25 + this.jaw * 0.85 - (this.biteT > 0 ? 0.2 : 0);
-    const jl = 4 * z;
-    for (const sg of [-1, 1]) {
-      const ang = Math.atan2(d.y, d.x) + sg * spread;
-      const ax = Math.cos(ang), ay = Math.sin(ang);
-      const bx = fx + px * sg * 1.2 * z, by = fy + py * sg * 1.2 * z;
-      const tx = bx + ax * jl, ty = by + ay * jl;
-      fb.line(bx, by, tx, ty, WORM_C.jaw);
-      fb.line(bx + px * sg * 0.8, by + py * sg * 0.8, tx - ax * 0.5, ty - ay * 0.5, WORM_C.jawD);
-      if (z > 1.4) fb.line(bx + px * sg * 1.6, by + py * sg * 1.6, tx - ax, ty - ay, WORM_C.jawD);
-      fb.put(tx - px * sg, ty - py * sg, WORM_C.jaw);
-      // Teeth along the inside of each mandible.
-      for (let t = 1; t < jl - 1; t += 2) fb.put(bx + ax * t - px * sg, by + ay * t - py * sg, WORM_C.jaw);
+    const fx = h.x + d.x * h.r * 0.55, fy = h.y + d.y * h.r * 0.55;
+    const open = this.jaw;
+    if (open > 0.05) {
+      const mr = h.r * (0.35 + open * 0.55);
+      fb.disc(fx, fy, mr + 1, WORM_C.out);
+      fb.disc(fx, fy, mr, WORM_C.gum);
+      fb.disc(fx + d.x * mr * 0.25, fy + d.y * mr * 0.25, mr * 0.55, WORM_C.throat);
+      const nT = 10;
+      for (let k = 0; k < nT; k++) {
+        const a = k / nT * TAU + this.t * 0.5;
+        fb.put(fx + Math.cos(a) * mr * 0.85, fy + Math.sin(a) * mr * 0.85, WORM_C.tooth);
+        if (open > 0.6) fb.put(fx + Math.cos(a + 0.3) * mr * 0.55, fy + Math.sin(a + 0.3) * mr * 0.55, WORM_C.tooth);
+      }
+      // Lips peel back into four flaps.
+      for (let k = 0; k < 4; k++) {
+        const a = Math.atan2(d.y, d.x) + (k - 1.5) * (0.5 + open * 0.5);
+        const lx = fx + Math.cos(a) * mr, ly = fy + Math.sin(a) * mr;
+        fb.line(lx, ly, lx + Math.cos(a) * 2.5 * z * open, ly + Math.sin(a) * 2.5 * z * open, WORM_C.dark);
+      }
+    } else {
+      // Closed: a puckered slit with a couple of fangs showing.
+      fb.line(fx - px * 1.5 * z, fy - py * 1.5 * z, fx + px * 1.5 * z, fy + py * 1.5 * z, WORM_C.out);
+      fb.put(fx + d.x - px, fy + d.y - py, WORM_C.tooth); fb.put(fx + d.x + px, fy + d.y + py, WORM_C.tooth);
     }
     const up = { x: h.nx, y: h.ny };
     for (let e = 0; e < 3; e++) {

@@ -27,7 +27,8 @@ const WEAPONS = [
 ];
 
 // Weapon kinds that are a creature's own attack (slot 1) rather than a stolen gun.
-const NATURAL_KINDS = new Set(['bite', 'tendrils', 'dissolve', 'shards']);
+const NATURAL_KINDS = new Set(['bite', 'tendrils', 'dissolve', 'shards', 'spear', 'swallow', 'devour']);
+const AMMO_MAX = { harpoon: 8, shotgun: 6, saw: 4, bile: 3 };
 
 function approach(v, target, amount) {
   return v < target ? Math.min(target, v + amount) : Math.max(target, v - amount);
@@ -58,6 +59,9 @@ class Player {
     this.weapons = this.constructor.weaponList || WEAPONS;
     this.creature = this.constructor.creatureName || 'SUBJECT 09';
     this.hasTentacle = this.constructor.hasTentacle !== false;
+    this.dmgTaken = this.constructor.dmgTaken || 1;
+    this.ammo = { ...AMMO_MAX };
+    this.battery = 1;
     this.coreR = CORE_R;               // collision radius (creatures that grow enlarge it)
     this.mass = 0;                     // pixels eaten: creatures grow with it
     this.vx = 0; this.vy = 0;
@@ -153,6 +157,7 @@ class Player {
     for (let i = 0; i < SENSE_RAYS; i++) {
       const a = (i + 0.5) / SENSE_RAYS * TAU;
       const dx = Math.cos(a), dy = Math.sin(a);
+      if (dy < -0.45) continue;          // ceilings are never gripped: no hanging from roofs
       const r = m.raycast(this.x, this.y, dx, dy, REACH);
       if (!r.hit) continue;
       const k = 1 - r.dist / REACH;
@@ -164,11 +169,12 @@ class Player {
 
   hurt(dmg, dx, dy, x, y) {
     if (this.dead || this.god || this.dashT > 0 || dmg <= 0) return;
+    dmg *= this.dmgTaken || 1;
     this.hp -= dmg;
     this.hurtT = 0.2;
     this.lastHurt = this.t;
     const g = this.game;
-    g.blood.spray(x, y, dx || 0, dy || -1, 8, 300, 0.6);
+    if (this.constructor.bleeds !== false) g.blood.spray(x, y, dx || 0, dy || -1, 8, 300, 0.6);
     // The wound shows up on the exact pixel that was hit.
     for (let k = this.pieces.length - 1; k >= 0; k--) {
       const q = this.pieces[k];
@@ -198,9 +204,9 @@ class Player {
         g.blood.spawn(x, y, rand(-420, 420), rand(-620, 50), 2.5, q.col[idx]);
       }
     }
-    g.blood.burst(this.cx, this.cy, 80, 500);
+    if (this.constructor.bleeds !== false) g.blood.burst(this.cx, this.cy, 80, 500);
     Sfx.rip();
-    g.message('SUBJECT 09 NEUTRALISED', '#ff5a64');
+    g.message(this.creature + ' NEUTRALISED', '#ff5a64');
   }
 
   respawn() {
@@ -222,7 +228,8 @@ class Player {
       return;
     }
     this.hurtT -= dt;
-    if (this.t - this.lastHurt > 5) this.heal(4 * dt);
+    if (this.t - this.lastHurt > 6) this.heal(3 * dt);
+    this.regenAmmo(dt);
 
     // Aim.
     const m = g.mouseWorld();
@@ -265,9 +272,11 @@ class Player {
     if (nat) {
       this.heat = Math.max(0, this.heat - 0.45 * dt);
     } else if (kind === 'laser') {
-      if (Input.mouse.down[0] && !this.overheat) {
+      if (Input.mouse.down[0] && !this.disarmed && !this.overheat && this.battery > 0) {
         this.firingLaser = true;
         this.heat += 0.3 * dt;
+        this.battery = Math.max(0, (this.battery ?? 1) - dt * 0.12);
+        if (this.battery <= 0) { this.firingLaser = false; this.overheat = true; }
         if (this.heat >= 1) { this.heat = 1; this.overheat = true; Sfx.denied(); g.message('LASER OVERHEATED', '#ff8a3a'); }
       } else {
         this.heat = Math.max(0, this.heat - 0.45 * dt);
@@ -275,7 +284,10 @@ class Player {
       if (Input.mouse.pressed[0] && this.overheat) Sfx.denied();
     } else {
       this.heat = Math.max(0, this.heat - 0.45 * dt);
-      if (Input.mouse.down[0] && this.cool <= 0) this.fire(kind);
+      if (Input.mouse.down[0] && !this.disarmed && this.cool <= 0) {
+        if ((this.ammo[kind] ?? 1) > 0) { this.fire(kind); if (kind in this.ammo) this.ammo[kind]--; }
+        else if (Input.mouse.pressed[0]) { Sfx.denied(); this.cool = 0.2; }
+      }
     }
     if (this.overheat && this.heat < 0.3) this.overheat = false;
     Sfx.laserOn(this.firingLaser);
@@ -401,6 +413,15 @@ class Player {
   }
 
   wkind() { return this.weapons[this.weapon].kind; }
+
+  // Stolen guns have limited ammo that trickles back.
+  regenAmmo(dt) {
+    this.ammoT = (this.ammoT || 0) + dt;
+    if (this.ammoT < 8) return;
+    this.ammoT = 0;
+    for (const k in AMMO_MAX) this.ammo[k] = Math.min(AMMO_MAX[k], this.ammo[k] + 1);
+    this.battery = Math.min(1, (this.battery ?? 1) + 0.1);
+  }
 
   // Eating: heal and grow. Creatures that grow implement grow().
   feed(px) {

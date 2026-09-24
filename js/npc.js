@@ -11,6 +11,7 @@ const DOWNED_LINES = ['help... me...', 'I cant feel my legs', 'mom...', 'so cold
 const LEGLESS_LINES = ['MY LEGS!', 'WHERE ARE MY LEGS', 'no no no no', 'I have to get out...'];
 const DAZED_LINES = ['wh... what?', 'who turned off the...', 'mmh... mom?', 'the floor is... moving'];
 const CLUTCH_LINES = ['*gurgle*', 'hhk... hhk...', 'can\'t... breathe'];
+const NIBBLE_CAUSES = new Set(['tendril', 'swarm', 'acid']);
 const MAX_HP = { guard: 100, scientist: 80, soldier: 120 };
 
 class NPC {
@@ -37,6 +38,7 @@ class NPC {
     this.speed = 0;
     this.flinch = 0;
     this.bleedRate = 0;
+    this.nibbled = 0;          // vital zones already wounded by creature nibbles
     this.bubble = null;
     this.grabbed = false;
     this.struggleT = 0;
@@ -133,9 +135,25 @@ class NPC {
     const g = this.game;
     this.lastHitBy = cause;
     const label = (t, c) => { if (!this.zoneShown.has(t)) { this.zoneShown.add(t); g.fx.text(x, y - 16, t, c); } };
+    // Creature nibbles (a pixel or two at a time) wound vitals rather than
+    // instantly killing: it takes a real chunk of brain, and the heart bleeds slower.
+    const nibble = NIBBLE_CAUSES.has(cause);
+    // ...and each vital bleeds once, not again for every bite.
+    const fresh = nibble ? mask & ~this.nibbled : mask;
+    if (nibble) this.nibbled |= mask;
     if (mask & (1 << Z_BRAIN)) {
       // A graze (a few brain pixels) is sometimes survivable: dazed and stumbling.
       this.brainLost += brainCount != null ? brainCount : Math.max(1, this.rag.zoneCount[Z_BRAIN]);
+      if (nibble && this.brainLost < 8) {
+        label('HEAD WOUND', '#ffcf6a');
+        this.bleedRate += 1;
+        this.damage(4, cause);
+        if (this.alive && !this.downed && (!this.react || this.react.kind !== 'dazed')) {
+          this.react = { kind: 'dazed', t: rand(4, 7), wander: this.facing, turnT: 1 };
+          this.say(pick(DAZED_LINES), 2);
+        }
+        return;
+      }
       const minor = this.brainLost <= 3;
       if (!this.brainRolled) { this.brainRolled = true; this.brainSurvives = minor && Math.random() < 0.35; }
       if (this.brainSurvives && minor) {
@@ -153,23 +171,23 @@ class NPC {
       this.die(cause, 'rigid');
       return;
     }
-    if (mask & (1 << Z_HEART)) {
+    if (fresh & (1 << Z_HEART)) {
       label('HEART HIT', '#ff4050');
-      this.bleedRate += 30;
+      this.bleedRate += nibble ? 6 : 30;
       this.goDown();
     }
-    if (mask & (1 << Z_SPINE)) {
+    if (fresh & (1 << Z_SPINE)) {
       label('SPINE SEVERED', '#ffcf6a');
       this.paralysed = true;
       this.goDown();
     }
-    if (mask & (1 << Z_ARTERY)) {
+    if (fresh & (1 << Z_ARTERY)) {
       label('ARTERY', '#ff7a7a');
-      this.bleedRate += 9;
+      this.bleedRate += nibble ? 3 : 9;
     }
-    if ((mask & (1 << Z_NECK)) && this.alive) {
+    if ((fresh & (1 << Z_NECK)) && this.alive) {
       label('THROAT', '#ff7a7a');
-      this.bleedRate += 14;
+      this.bleedRate += nibble ? 5 : 14;
       // Sometimes they stay on their feet clutching their throat until they drop.
       if (!this.downed && Math.random() < 0.5 && (!this.react || this.react.kind !== 'clutch')) {
         this.react = { kind: 'clutch', t: rand(3, 6), wander: this.facing, turnT: 0.8 };
@@ -300,6 +318,7 @@ class NPC {
 
   seesPlayer(range) {
     const pl = this.game.player;
+    if (pl.dead || pl.hidden) return false;
     const h = this.rag.head;
     const px = pl.cx, py = pl.cy;
     const d = dist(h.x, h.y, px, py);
@@ -434,15 +453,38 @@ class NPC {
     return P;
   }
 
+  // Guards wave until they spot the creature, then charge in with a stun baton.
   thinkGuard(dt) {
     const pl = this.game.player;
-    if (Math.abs(pl.x - this.rootX) < 900) this.facing = pl.x < this.rootX ? -1 : 1;
+    const sees = this.seesPlayer(420);
+    if (sees) this.sawPlayerT = 4; else this.sawPlayerT -= dt;
     this.speed = 0;
-    this.modeT -= dt;
-    if (this.modeT <= 0) {
-      this.modeT = rand(5, 10);
-      if (this.seesPlayer(420) && Math.random() < 0.6) this.say(pick(GUARD_LINES));
+    this.swingT = (this.swingT || 0) - dt;
+    if (this.mode === 'idle') {
+      if (Math.abs(pl.x - this.rootX) < 900) this.facing = pl.x < this.rootX ? -1 : 1;
+      if (sees) { this.mode = 'attack'; this.say(pick(['CONTAINMENT BREACH!', 'GET BACK IN YOUR CELL!', 'I GOT IT!']), 1.6); }
+      return;
     }
+    if (this.sawPlayerT <= 0) { this.mode = 'idle'; this.windup = 0; return; }
+    const dx = pl.cx - this.rootX, adx = Math.abs(dx);
+    this.facing = dx < 0 ? -1 : 1;
+    if (this.windup > 0) {
+      this.windup -= dt;
+      if (this.windup <= 0) {
+        this.swingT = 1.0;
+        // Swing lands if the creature is still in reach.
+        const ddx = (pl.cx - this.rootX) * this.facing;
+        if (ddx > -15 && ddx < 80 && Math.abs(pl.cy - (this.groundY - 45)) < 70 && this.armed() && !pl.hidden) {
+          pl.hurt(12, this.facing, -0.3, pl.cx, pl.cy);
+          pl.vx += this.facing * 260; pl.vy -= 140;
+          Sfx.thunk();
+          this.game.fx.sparks(pl.cx, pl.cy, this.facing, -0.5, 6, 260, '#9fd0ff');
+        }
+      }
+      return;
+    }
+    if (adx > 40) this.speed = 125;
+    if (adx < 60 && Math.abs(pl.cy - (this.groundY - 60)) < 90 && this.swingT <= 0 && this.armed()) this.windup = 0.3;
   }
 
   armed() {
@@ -546,6 +588,12 @@ class NPC {
       // Hand raised in a wave.
       const w = Math.sin(t * 7) * 1.3;
       P[R.ELBOW_F] = [5.5, -27]; P[R.HAND_F] = [7 + w, -33.5];
+    }
+    if (this.type === 'guard' && this.mode === 'attack') {
+      // Baton raised on the windup, swung down after.
+      if (this.windup > 0) { P[R.ELBOW_F] = [3, -35]; P[R.HAND_F] = [-1, -41]; }
+      else if (this.swingT > 0.7) { P[R.ELBOW_F] = [6, -26]; P[R.HAND_F] = [11, -22]; }
+      else { P[R.ELBOW_F] = [4, -25]; P[R.HAND_F] = [8, -28]; }
     }
     if (this.type === 'soldier' && this.mode === 'attack') {
       // Both hands on the pistol, pointed at the player.
@@ -657,6 +705,13 @@ class NPC {
 
   render(fb) {
     this.rag.render(fb);
+    if (this.type === 'guard' && this.mode === 'attack' && this.main.has(this.rag.joint[R.HAND_F]) && this.alive) {
+      const H = this.rag.joint[R.HAND_F], E = this.rag.joint[R.ELBOW_F];
+      const d = dist(E.x, E.y, H.x, H.y) || 1;
+      const ux = (H.x - E.x) / d, uy = (H.y - E.y) / d;
+      fb.line(H.x / PX, H.y / PX, H.x / PX + ux * 6, H.y / PX + uy * 6, PISTOL_C);
+      if (this.windup > 0) fb.put(H.x / PX + ux * 6, H.y / PX + uy * 6, hexc('#9fd0ff'));
+    }
     if (this.type === 'soldier' && this.main.has(this.rag.joint[R.HAND_F])) {
       // Pistol in the front hand, pointing along the forearm.
       const H = this.rag.joint[R.HAND_F], E = this.rag.joint[R.ELBOW_F];
