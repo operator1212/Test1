@@ -8,8 +8,9 @@
 
   function size() {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = Math.floor(window.innerWidth * dpr);
-    canvas.height = Math.floor(window.innerHeight * dpr);
+    const r = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.floor((r.width || window.innerWidth) * dpr));
+    canvas.height = Math.max(1, Math.floor((r.height || window.innerHeight) * dpr));
     if (game) game.resize();
   }
   let game = null;
