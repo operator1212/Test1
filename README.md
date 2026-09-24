@@ -22,13 +22,17 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 | Input | Action |
 |---|---|
 | A / D | move |
-| W / Space | jump (also leaps off the tentacle) |
+| W / Space | jump. Also wall jump (jump while touching a wall) and leap off the tentacle |
+| Shift | dash (hold WASD to pick a direction). One air dash per jump; it rams NPCs |
 | Mouse | aim |
 | LMB | fire the current weapon |
-| RMB (hold) | tentacle: latch onto walls and reel in, or grab and drag bodies |
-| 1 / 2 / Q / mouse wheel | harpoon / prototype laser |
+| RMB (hold) | tentacle: latch onto terrain and zip or swing, or grab a body and swing it with the mouse (release to throw) |
+| E (while holding) | rip the grabbed part off, or devour a loose part or corpse to heal |
+| 1-5 / Q / mouse wheel | harpoon / laser / shotgun / saw / bile bomb |
 | F | slow motion |
-| G / T | spawn a guard / scientist at the cursor |
+| G / T / Y | spawn a guard / scientist / armed soldier at the cursor |
+| K | god mode |
+| O | screen shake on/off |
 | X | clear all harpoons |
 | R | reset the chamber |
 | H | toggle help |
@@ -51,12 +55,32 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 - **Active ragdolls**: while conscious, NPCs are pulled toward an animated pose (idle wave,
   walk, flee, cower). When hit, grabbed, pinned or killed they go limp, and they get back up if
   their legs are still attached. Losing the connection between the head and the pelvis kills them.
-- **Harpoon** (`js/weapons.js`): impales up to 3 body parts (pixel-precise hits), carries them,
-  and pins them into whatever surface it hits. A pinned NPC flails and bleeds.
-- **Tentacle grapple**: latch onto terrain to reel in or swing, or hook a body to drag or fling
-  it. Pull hard on a pinned body and limbs tear off at the joint.
-- **NPCs** (`js/npc.js`): side-view stick-figure characters. Security guards (helmet, visor,
-  uniform) wave at you. Scientists (lab coat, goggles) patrol, panic, flee and cower.
+- **Fatal zones**: every body pixel can carry a vital zone. The brain kills instantly (a
+  headshot). The heart means collapse and a fast bleed-out. The spine means paralysis. The neck
+  and thigh arteries bleed heavily. NPCs below a quarter of their health go down and bleed out.
+  Every damage source checks these zones.
+- **Slams**: bodies thrown by the tentacle, rammed by a dash, blown up or dropped from a height
+  take impact damage. Hard enough hits burst tissue and crack skulls.
+- **Weapons** (`js/weapons.js`):
+  - **Harpoon**: impales up to 3 body parts and pins them to whatever surface it hits. A body
+    soaks up the spike's momentum. If the spike is too slow to reach a wall, it stays lodged
+    in the body.
+  - **Prototype laser**: burns away the exact pixels it touches. It overheats.
+  - **Shotgun**: 7 pellets that punch pixel holes. The recoil is strong enough to boost a jump.
+  - **Saw launcher**: a spinning blade that ricochets off walls and cuts through everything it
+    touches.
+  - **Bile bomb**: a lobbed acid sac that bursts, blowing chunks off anyone nearby and
+    splattering green bile.
+- **Tentacle**: latch onto terrain to zip and swing, or grab any body part and swing it with the
+  mouse to slam or throw it. E rips the grabbed part off, or devours a loose part or corpse to
+  heal. Carrion-style.
+- **Movement**: wall slide and wall jump, and a dash with afterimages that bowls people over.
+- **NPCs** (`js/npc.js`):
+  - **Security guards** (helmet, visor, uniform) wave at you.
+  - **Scientists** (lab coat, goggles) patrol, panic, flee and cower.
+  - **Armed soldiers** (red visor, pistol) shoot at you. Cut off their gun arm and they can't.
+  - You have 100 HP that regenerates after a few seconds out of combat, and you respawn at the
+    start if you die.
 - **Objectives**: pin a guard's leg to a wall, then kill the scientist with the laser.
 
 ## Layout
@@ -79,4 +103,4 @@ js/main.js      boot and fixed-timestep loop
 ```
 
 To edit the test map, change the ASCII in `TEST_MAP` (`js/map.js`): `#` wall, `=` girder,
-`P` player, `G` guard, `S` scientist.
+`P` player, `G` guard, `S` scientist, `A` armed soldier.

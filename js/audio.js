@@ -59,6 +59,13 @@ const Sfx = {
   rip() { this.noise(0.45, 500, 1, 1.0, 'bandpass', 80); this.tone(70, 30, 0.35, 0.5, 'sawtooth'); },
   scream() { this.tone(rand(500, 700), rand(250, 350), 0.5, 0.12, 'sawtooth'); },
   denied() { this.tone(200, 120, 0.15, 0.25, 'square'); },
+  boom() { this.noise(0.8, 300, 0.7, 1.2, 'lowpass', 40); this.tone(90, 30, 0.6, 0.6, 'sine'); },
+  shotgun() { this.noise(0.3, 1400, 0.8, 1.0, 'lowpass', 150); this.tone(140, 45, 0.18, 0.4, 'square'); },
+  pistol() { this.noise(0.1, 2200, 1, 0.45, 'bandpass', 500); },
+  clang() { this.tone(rand(900, 1300), rand(600, 800), 0.12, 0.15, 'triangle'); },
+  grind() { this.noise(0.08, 3000, 3, 0.25, 'bandpass', 1500); },
+  dash() { this.noise(0.18, 600, 0.8, 0.5, 'bandpass', 3000); },
+  hurt() { this.tone(260, 110, 0.18, 0.3, 'sawtooth'); },
 
   laserOn(on) {
     if (!this.ctx) return;

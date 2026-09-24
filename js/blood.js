@@ -121,7 +121,17 @@ class FX {
     this.list.push({ kind: 'flash', x, y, r, life: 0.07, max: 0.07, color: hexc(color || '#fff0c8') });
   }
   text(x, y, str, color) {
+    // Skip duplicates and stack new popups above nearby ones so they stay readable.
+    for (const t of this.texts) {
+      if (t.str === str && Math.abs(t.x - x) < 80 && t.life > t.max - 0.6) return;
+    }
+    for (let k = 0; k < 6; k++) {
+      const clash = this.texts.some((t) => Math.abs(t.x - x) < 90 && Math.abs(t.y - y) < 18);
+      if (!clash) break;
+      y -= 18;
+    }
     this.texts.push({ x, y, str, color: color || '#fff', life: 1.4, max: 1.4 });
+    if (this.texts.length > 8) this.texts.shift();
   }
 
   update(dt) {

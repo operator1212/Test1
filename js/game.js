@@ -14,11 +14,13 @@ class Game {
     this.fx = new FX();
     this.npcs = [];
     this.spikes = [];
+    this.shots = [];         // bullets, saws, bombs
     this.messages = [];
     this.time = 0;
     this.timeScale = 1;
     this.shakeAmt = 0;
     this.showHelp = true;
+    this.shakeOn = true;
     this.laser = null;
     this.objectives = [
       { id: 'pin', text: "HARPOON A GUARD'S LEG TO A WALL", done: false },
@@ -32,7 +34,7 @@ class Game {
 
     for (const s of this.map.spawns) {
       if (s.type === 'P') this.spawn = { x: s.x, y: s.y - 0.01 };
-      else this.spawnNPC(s.type === 'S' ? 'scientist' : 'guard', s.x, s.y);
+      else this.spawnNPC({ S: 'scientist', A: 'soldier' }[s.type] || 'guard', s.x, s.y);
     }
     this.player = new Player(this, this.spawn.x, this.spawn.y);
     this.cam = { x: this.spawn.x, y: this.spawn.y - 200 };
@@ -61,7 +63,7 @@ class Game {
     return { x: (Input.mouse.x / v.s + v.x0) * PX, y: (Input.mouse.y / v.s + v.y0) * PX };
   }
 
-  shake(a) { this.shakeAmt = Math.min(5, this.shakeAmt + a * 0.35); }
+  shake(a) { if (this.shakeOn) this.shakeAmt = Math.min(3, this.shakeAmt + a * 0.3); }
 
   message(text, color) {
     this.messages.push({ text: text.toUpperCase(), color: color || '#fff', t: 3 });
@@ -158,7 +160,11 @@ class Game {
     const I = Input;
     if (I.hit('KeyH')) this.showHelp = !this.showHelp;
     if (I.hit('KeyF')) { this.timeScale = this.timeScale < 1 ? 1 : 0.3; this.message(this.timeScale < 1 ? 'SLOW MOTION' : 'NORMAL SPEED'); }
-    if (I.hit('KeyG') || I.hit('KeyT')) this.spawnAtCursor(I.hit('KeyT') ? 'scientist' : 'guard');
+    if (I.hit('KeyG')) this.spawnAtCursor('guard');
+    if (I.hit('KeyT')) this.spawnAtCursor('scientist');
+    if (I.hit('KeyY')) this.spawnAtCursor('soldier');
+    if (I.hit('KeyK')) { this.player.god = !this.player.god; this.message(this.player.god ? 'GOD MODE ON' : 'GOD MODE OFF'); }
+    if (I.hit('KeyO')) { this.shakeOn = !this.shakeOn; this.shakeAmt = 0; this.message(this.shakeOn ? 'SCREEN SHAKE ON' : 'SCREEN SHAKE OFF'); }
     if (I.hit('KeyX')) this.clearSpikes();
 
     this.player.update(dt);
@@ -167,6 +173,9 @@ class Game {
     for (const s of this.spikes) s.update(dt, this);
     this.spikes = this.spikes.filter((s) => s.state !== 'dead');
     this.limitSpikes();
+    for (const s of this.shots) s.update(dt, this);
+    this.shots = this.shots.filter((s) => s.state !== 'dead');
+    this.dashRam();
 
     for (let it = 0; it < SOLVER_ITERS; it++) {
       const last = it === SOLVER_ITERS - 1;
@@ -199,6 +208,8 @@ class Game {
   }
 
   limitSpikes() {
+    const lodged = this.spikes.filter((s) => s.state === 'lodged');
+    if (lodged.length > 30) lodged[0].state = 'dead';
     const stuck = this.spikes.filter((s) => s.state === 'stuck');
     if (stuck.length <= 40) return;
     const old = stuck[0];
@@ -218,7 +229,105 @@ class Game {
     const g = this.map.groundBelow(m.x, m.y, 800);
     if (g === null) { Sfx.denied(); return; }
     this.spawnNPC(type, m.x, g);
-    this.fx.text(m.x, g - 130, type === 'guard' ? '+ GUARD' : '+ SCIENTIST', '#9fd0ff');
+    this.fx.text(m.x, g - 130, '+ ' + type.toUpperCase(), '#9fd0ff');
+  }
+
+  // Shared hit resolution for bullets/pellets: punch a hole (and a short
+  // channel along the travel direction), bleed, vital zones, knockback.
+  woundAt(h, o) {
+    const npc = h.npc, rag = npc.rag, q = h.piece;
+    const F = q.frame();
+    const [gi, gj] = q.toGrid(h.x + o.dx * PX * 0.4, h.y + o.dy * PX * 0.4, F);
+    rag.zoneHits = 0;
+    let removed = rag.burn(q, gi, gj, o.radius, 1, 0.25);
+    if (o.drill && rag.pieces.includes(q)) {
+      const [di, dj] = q.toGrid(h.x + o.dx * PX * o.drill, h.y + o.dy * PX * o.drill, F);
+      removed += rag.burn(q, di, dj, o.radius * 0.8, 1, 0.25);
+    }
+    h.particle.impulse(o.dx * o.push, o.dy * o.push);
+    this.blood.spray(h.x, h.y, o.dx, o.dy, 6, 380, 0.35);
+    this.blood.spray(h.x, h.y, -o.dx, -o.dy, 3, 160, 0.7);
+    const living = npc.alive && npc.main.has(h.particle);
+    if (living) {
+      npc.addBleed(removed);
+      npc.damage(o.dmg, o.cause);
+      npc.flinch = 1;
+      if (o.stun && Math.random() < 0.4) npc.knock(o.stun);
+      npc.applyZones(rag.zoneHits, o.cause, h.x, h.y);
+    }
+    return removed;
+  }
+
+  explosion(x, y, R) {
+    Sfx.boom();
+    this.shake(4);
+    this.fx.flash(x, y, R * 0.9, '#d8ff9a');
+    this.fx.sparks(x, y, 0, -1, 16, 520, '#c8ff7a');
+    for (let k = 0; k < 6; k++) this.fx.smoke(x + rand(-20, 20), y + rand(-20, 20), rand(2, 3.5));
+    for (let k = 0; k < 60; k++) {
+      const a = rand(0, TAU), s = rand(150, 700);
+      this.blood.spawn(x, y, Math.cos(a) * s, Math.sin(a) * s - 200, rand(1.5, 2.5), pick(BILE_PX));
+    }
+    for (const npc of this.npcs) {
+      const rag = npc.rag;
+      rag.zoneHits = 0;
+      let removed = 0;
+      for (const q of rag.pieces.slice()) {
+        if (!rag.pieces.includes(q)) continue;
+        if (dist(x, y, q.bc.x, q.bc.y) > R * 0.35 + q.bc.r) continue;
+        const [gi, gj] = q.toGrid(x, y, q.frame());
+        removed += rag.burn(q, gi, gj, R * 0.3 / PX, 0.5, 0.55);
+      }
+      for (const p of rag.parts) {
+        const d = dist(p.x, p.y, x, y) || 1;
+        if (d > R * 1.7) continue;
+        const f = 1 - d / (R * 1.7);
+        p.impulse((p.x - x) / d * 1500 * f, ((p.y - y) / d * 1500 - 500) * f);
+      }
+      const dp = dist(x, y, rag.pelvis.x, rag.pelvis.y - 30);
+      if (npc.alive && dp < R * 1.7) {
+        npc.knock(3);
+        npc.addBleed(removed);
+        npc.damage(Math.max(0, 1 - dp / (R * 1.3)) * 110, 'bomb');
+        npc.applyZones(rag.zoneHits, 'bomb', x, y);
+      }
+    }
+    const pl = this.player;
+    const d = dist(x, y, pl.x, pl.y - 55) || 1;
+    if (d < R * 1.4 && !pl.dead) {
+      const f = 1 - d / (R * 1.4);
+      pl.vx += (pl.x - x) / d * 900 * f;
+      pl.vy += ((pl.y - 55 - y) / d * 900 - 350) * f;
+      pl.hurt(28 * f, 0, 0, pl.x, pl.y - 55);
+    }
+  }
+
+  npcShoot(npc) {
+    const H = npc.rag.joint[R.HAND_F], pl = this.player;
+    const tx = pl.x, ty = pl.y - 55;
+    const a = Math.atan2(ty - H.y, tx - H.x) + rand(-0.06, 0.06);
+    const sp = 950;
+    const mx = H.x + Math.cos(a) * 12, my = H.y + Math.sin(a) * 12;
+    this.shots.push(new Bullet(mx, my, Math.cos(a) * sp, Math.sin(a) * sp, 'npc', 9, 'bullet', npc.rag));
+    this.fx.flash(mx, my, 14, '#ffe7a0');
+    Sfx.pistol();
+  }
+
+  // Dashing through people bowls them over.
+  dashRam() {
+    const pl = this.player;
+    if (pl.dashT <= 0) return;
+    const [l, t, r, b] = pl.box();
+    for (const npc of this.npcs) {
+      if (pl.rammed.has(npc)) continue;
+      const hit = npc.rag.parts.some((p) => p.x > l - 8 && p.x < r + 8 && p.y > t && p.y < b);
+      if (!hit) continue;
+      pl.rammed.add(npc);
+      for (const p of npc.rag.parts) if (npc.main.has(p)) p.impulse(pl.dashDx * 700, pl.dashDy * 700 - 250);
+      if (npc.alive) { npc.knock(2); npc.damage(8, 'dash'); }
+      Sfx.thunk();
+      this.shake(1.5);
+    }
   }
 
   // The prototype laser burns away the exact pixels it touches.
@@ -230,7 +339,6 @@ class Game {
     const a = pl.aim;
     const ray = this.map.raycast(o.x, o.y, a.x, a.y, LASER_RANGE);
     const h = this.hitPieces(o.x, o.y, ray.x, ray.y, null, 0);
-    this.shake(0.4);
     if (h) {
       this.laser = { x0: o.x, y0: o.y, x1: h.x, y1: h.y, hit: true };
       const npc = h.npc, q = h.piece;
@@ -242,17 +350,19 @@ class Game {
         if (i >= 0 && j >= 0 && i < q.w && j < q.h && q.col[j * q.w + i]) q.col[j * q.w + i] = mixc(q.col[j * q.w + i], C_BLACK, 0.12);
       }
       h.particle.impulse(a.x * 25, a.y * 25);
-      npc.flinch = Math.max(npc.flinch, 0.5);
-      npc.lastHitBy = 'laser';
+      const living = npc.alive && npc.main.has(h.particle);
+      if (living) { npc.flinch = Math.max(npc.flinch, 0.5); npc.lastHitBy = 'laser'; }
+      npc.rag.zoneHits = 0;
       // Burn at the entry pixel and drill a little deeper along the beam.
       const [di, dj] = q.toGrid(h.x + a.x * PX * 1.8, h.y + a.y * PX * 1.8, F);
       let removed = npc.rag.burn(q, gi, gj, 1.5, Math.min(1, dt * 45), 0.45);
       if (npc.rag.pieces.includes(q)) removed += npc.rag.burn(q, di, dj, 1.1, Math.min(1, dt * 30), 0.45);
       if (removed) {
-        npc.addBleed(removed);
+        if (living) npc.addBleed(removed);
         this.blood.spray(h.x, h.y, -a.x, -a.y - 0.3, removed + 1, 300, 0.8);
       }
-      if (npc.alive) {
+      if (living) {
+        npc.applyZones(npc.rag.zoneHits, 'laser', h.x, h.y);
         npc.damage(110 * dt, 'laser');
         if (Math.random() < dt * 3 && npc.alive) npc.say(pick(['AAAAAH!', 'IT BURNS!', 'NO NO NO']), 1);
       }
@@ -300,6 +410,7 @@ class Game {
     this.player.tentacle.render(fb);
     this.player.render(fb);
     for (const s of this.spikes) s.render(fb);
+    for (const s of this.shots) s.render(fb);
     this.renderLaser(fb);
     this.blood.renderDrops(fb);
     this.fx.render(fb);
@@ -356,25 +467,36 @@ class Game {
       pixelText(g, o.text, 16, y, o.done ? '#7dff9a' : '#ffffff');
     });
 
-    // Weapons.
+    // Health.
     const pl = this.player;
-    ['1 HARPOON', '2 LASER'].forEach((name, i) => {
-      const x = 4 + i * 62, y = H - 20;
-      panel(x, y, 58, 16, pl.weapon === i ? 'rgba(47,95,191,0.92)' : 'rgba(12,20,38,0.78)');
-      pixelText(g, name, x + 4, y + 3, '#ffffff');
-      g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(x + 4, y + 11, 50, 2);
-      if (i === 0) {
-        g.fillStyle = '#d7dce4'; g.fillRect(x + 4, y + 11, Math.round(50 * clamp(1 - pl.cool / 0.42, 0, 1)), 2);
-      } else {
+    panel(4, 38, 90, 10);
+    g.fillStyle = '#3a0c12'; g.fillRect(7, 41, 84, 4);
+    g.fillStyle = pl.god ? '#ffe36b' : pl.hp > 35 ? '#e8414f' : (Math.floor(this.time * 6) % 2 ? '#ff8a8a' : '#e8414f');
+    g.fillRect(7, 41, Math.round(84 * clamp(pl.hp / pl.maxHp, 0, 1)), 4);
+    pixelText(g, pl.god ? 'GOD' : String(Math.ceil(pl.hp)), 97, 40, '#ffffff');
+
+    // Weapons.
+    WEAPONS.forEach((wpn, i) => {
+      const x = 4 + i * 47, y = H - 20;
+      panel(x, y, 44, 16, pl.weapon === i ? 'rgba(47,95,191,0.92)' : 'rgba(12,20,38,0.78)');
+      pixelText(g, (i + 1) + ' ' + wpn.name, x + 3, y + 3, '#ffffff');
+      g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(x + 3, y + 11, 38, 2);
+      if (i === 1) {
         g.fillStyle = pl.overheat ? '#ff3b2f' : `hsl(${lerp(190, 10, pl.heat)},100%,60%)`;
-        g.fillRect(x + 4, y + 11, Math.round(50 * pl.heat), 2);
+        g.fillRect(x + 3, y + 11, Math.round(38 * pl.heat), 2);
+      } else {
+        const r = pl.weapon === i ? clamp(1 - pl.cool / wpn.cool, 0, 1) : 1;
+        g.fillStyle = '#d7dce4'; g.fillRect(x + 3, y + 11, Math.round(38 * r), 2);
       }
     });
-    panel(128, H - 20, 70, 16);
-    pixelText(g, 'RMB TENTACLE', 132, H - 17, '#ffb3b8');
-    const ts = pl.tentacle.state === 'attached' ? (pl.tentacle.npc ? 'HOLDING BODY' : 'LATCHED') : 'READY';
-    pixelText(g, ts, 132, H - 10, '#c9d6ee');
-    if (this.timeScale < 1) pixelTextShadow(g, 'SLOW-MO', 204, H - 14, '#ffd84a');
+    const ax = 4 + WEAPONS.length * 47;
+    panel(ax, H - 20, 76, 16);
+    const tn = pl.tentacle;
+    const ts = tn.state === 'attached' ? (tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
+    pixelText(g, ts, ax + 3, H - 17, '#ffb3b8');
+    g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(ax + 3, H - 9, 70, 2);
+    g.fillStyle = '#7fe0ff'; g.fillRect(ax + 3, H - 9, Math.round(70 * clamp(1 - pl.dashCool / 0.5, 0, 1)), 2);
+    if (this.timeScale < 1) pixelTextShadow(g, 'SLOW-MO', ax + 82, H - 14, '#ffd84a');
 
     // Messages.
     const nm = this.messages.length;
@@ -387,11 +509,13 @@ class Game {
     // Help.
     if (this.showHelp) {
       const lines = [
-        ['A D', 'MOVE'], ['W SPACE', 'JUMP / LEAP OFF TENTACLE'], ['MOUSE', 'AIM'], ['LMB', 'FIRE WEAPON'],
-        ['RMB HOLD', 'TENTACLE: LATCH, REEL, GRAB'], ['1 2 Q WHEEL', 'HARPOON / LASER'], ['F', 'SLOW MOTION'],
-        ['G / T', 'SPAWN GUARD / SCIENTIST'], ['X', 'CLEAR HARPOONS'], ['R', 'RESET CHAMBER'], ['H', 'HIDE HELP'],
+        ['A D', 'MOVE'], ['W SPACE', 'JUMP, WALL JUMP, LEAP OFF TENTACLE'], ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
+        ['LMB', 'FIRE WEAPON'], ['RMB HOLD', 'TENTACLE: LATCH/ZIP, GRAB + SWING'],
+        ['E', 'WHILE HOLDING: RIP OFF / DEVOUR'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION'],
+        ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
+        ['X / R', 'CLEAR HARPOONS / RESET'], ['H', 'HIDE HELP'],
       ];
-      const bw = 166, x = W - bw - 4;
+      const bw = 192, x = W - bw - 4;
       panel(x, 4, bw, 6 + lines.length * 8);
       lines.forEach(([k, d], i) => {
         pixelText(g, k, x + 4, 8 + i * 8, '#9fc2ff');

@@ -43,6 +43,10 @@ const STYLES = {
     skin: '#e2a57b', hand: '#3a3f4a', shirt: '#38568a', sleeve: '#38568a', sleeve2: '#38568a',
     pants: '#26324d', boots: '#15171c', belt: '#141518', helmet: '#2b313d', visor: '#5cc8f2', badge: '#f2c230',
   },
+  soldier: {
+    skin: '#c98e68', hand: '#1d1f1a', shirt: '#3d4533', sleeve: '#3d4533', sleeve2: '#3d4533',
+    pants: '#2c3226', boots: '#121310', belt: '#171914', helmet: '#23271f', visor: '#ff4a3a', badge: '#c9a23a',
+  },
   scientist: {
     skin: '#f0c29a', hand: '#f0c29a', shirt: '#eef2f6', sleeve: '#eef2f6', sleeve2: '#eef2f6',
     pants: '#44607a', boots: '#2c2c2c', hair: '#6b4a2f', goggles: '#9fe0ff', coat: true,
@@ -52,6 +56,28 @@ const STYLES = {
     pants: '#9aa4ae', boots: '#848d98', vein: '#a4283a',
   },
 };
+
+// Vital zones baked into every pixel.
+const Z_BRAIN = 1, Z_HEART = 2, Z_SPINE = 3, Z_ARTERY = 4;
+
+function zoneOf(kind, u, v, len) {
+  const av = Math.abs(v);
+  switch (kind) {
+    case 'head': {
+      const d = Math.hypot(u - len, v);
+      if (d < 4.2) return Z_BRAIN;
+      if (u < len - 4 && av < 1.7) return Z_ARTERY;   // neck
+      return 0;
+    }
+    case 'torso':
+      if (u > len * 0.5 && u < len - 1.2 && v > 0.6 && v < 3.4) return Z_HEART;
+      if (av < 0.9 && u > 0 && u < len) return Z_SPINE;
+      return 0;
+    case 'thigh':
+      return av < 1.2 && u > 1 && u < len - 1 ? Z_ARTERY : 0;
+  }
+  return 0;
+}
 
 const FLESH = ['#9a0f1a', '#b3172a', '#860b15', '#a8121f'].map((c) => hexc(c));
 const BONE = hexc('#ebe3d0'), BONE_D = hexc('#d2c6ab');
@@ -90,7 +116,7 @@ function shapeColor(kind, u, v, len, S, style) {
       if (!roundRect(u, v, u0, u1, hw, 2)) return null;
       let c = S.shirt;
       const k = v < -2.6 ? 0.88 : 1;
-      if (style === 'guard') {
+      if (S.belt) {
         if (u < 0.3) c = S.pants;
         else if (u < 1.6) c = S.belt;
         if (u > len - 4.2 && u < len - 2.6 && v > 1.2 && v < 3) c = S.badge;
@@ -108,11 +134,11 @@ function shapeColor(kind, u, v, len, S, style) {
       const du = u - len;
       const inHead = du * du + v * v <= HEAD_R_ART * HEAD_R_ART;
       const inNeck = u >= -0.5 && u <= len && Math.abs(v) <= 1.6;
-      if (style === 'guard' && du >= 0.3 && du <= 1.5 && v >= 0 && v <= 7) return { c: S.helmet, k: 1 };
+      if (S.helmet && du >= 0.3 && du <= 1.5 && v >= 0 && v <= 7) return { c: S.helmet, k: 1 };
       if (!inHead && !inNeck) return null;
       let c = S.skin, k = v < -3 ? 0.9 : 1, glow = false;
       if (inHead) {
-        if (style === 'guard') {
+        if (S.helmet) {
           if (du > 1.5) c = S.helmet;
           else if (du > -1.2 && v > 0.8) c = S.visor;
           if (du < -2.2 && du > -3.4 && v > 2.2 && v < 4.2) c = '#8a4636';
@@ -175,6 +201,7 @@ function genSprite(name, len, style) {
   const ox = -Math.floor(b[0]), oy = -Math.floor(b[2]);
   const w = Math.ceil(b[1]) + ox, h = Math.ceil(b[3]) + oy;
   const col = new Uint32Array(w * h), inner = new Uint32Array(w * h), glow = new Uint8Array(w * h);
+  const zone = new Uint8Array(w * h);
   const kk = new Float32Array(w * h);
   for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
     const u = i + 0.5 - ox, v = j + 0.5 - oy;
@@ -185,6 +212,7 @@ function genSprite(name, len, style) {
     kk[idx] = r.k;
     if (r.glow) glow[idx] = 1;
     inner[idx] = innerColor(kind, u, v, len);
+    zone[idx] = zoneOf(kind, u, v, len);
   }
   // Dark outline on the silhouette, light shading on one side.
   const out = new Uint32Array(w * h);
@@ -195,7 +223,7 @@ function genSprite(name, len, style) {
       !col[idx - 1] || !col[idx + 1] || !col[idx - w] || !col[idx + w];
     out[idx] = glow[idx] ? col[idx] : edge ? shade(col[idx], 0.55) : shade(col[idx], kk[idx]);
   }
-  return { w, h, ox, oy, col: out, inner };
+  return { w, h, ox, oy, col: out, inner, zone };
 }
 
 // ------------------------------------------------------------ pieces
@@ -203,7 +231,7 @@ class Piece {
   constructor(owner, name, a, b, spr, z) {
     this.owner = owner; this.name = name; this.a = a; this.b = b; this.z = z;
     this.w = spr.w; this.h = spr.h; this.ox = spr.ox; this.oy = spr.oy;
-    this.col = spr.col; this.inner = spr.inner;
+    this.col = spr.col; this.inner = spr.inner; this.zone = spr.zone;
     this.exposed = spr.exposed || new Uint8Array(spr.w * spr.h);
     this.len = spr.len != null ? spr.len : dist(a.x, a.y, b.x, b.y);
     this.k = 1; this.min = false;
@@ -317,8 +345,10 @@ class Piece {
     if (this.col[idx]) this.col[idx] = mixc(this.col[idx], c, amt);
   }
 
-  raster(fb) {
+  // tint/alpha draw a translucent single-colour ghost; offX/offY shift it (world units).
+  raster(fb, tint, alpha, offX = 0, offY = 0) {
     const F = this.frame();
+    F.ax += offX; F.ay += offY;
     const w = this.w, h = this.h, ox = this.ox, oy = this.oy, col = this.col;
     // Bounding box of the rotated bitmap, in art pixels.
     let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
@@ -340,7 +370,8 @@ class Piece {
         const gj = (wx * F.nx + wy * F.ny) / PX + oy;
         if (gj < 0 || gj >= h) continue;
         const c = col[(gj | 0) * w + (gi | 0)];
-        if (c) buf[row + X] = c;
+        if (!c) continue;
+        if (tint) fb.blend(X, Y, tint, alpha); else buf[row + X] = c;
       }
     }
   }
@@ -369,6 +400,8 @@ class Ragdoll {
     }));
     this.damp = 0.995;
     this.t = 0;
+    this.zoneHits = 0;
+    this.onImpact = null;
   }
 
   get head() { return this.joint[R.HEAD]; }
@@ -393,6 +426,10 @@ class Ragdoll {
       if (q.strain > 0.07) { q.strain = 0; this.tear(q); }
     }
     for (const q of this.pieces) q.updateBounds();
+    for (const p of this.parts) {
+      if (p.impact > 600 && this.onImpact) this.onImpact(p, p.impact, p.impactN);
+      p.impact = 0;
+    }
     this.bleed(dt);
   }
 
@@ -443,6 +480,7 @@ class Ragdoll {
   }
 
   // Burn pixels away around grid cell (gi, gj). Returns number removed.
+  // Vital zones touched are OR'ed into this.zoneHits for the caller.
   burn(piece, gi, gj, radius, prob, char) {
     const removed = [];
     const { w, h, col } = piece;
@@ -454,8 +492,20 @@ class Ragdoll {
         if (Math.random() < prob) { col[idx] = 0; removed.push(idx); }
       }
     if (!removed.length) return 0;
+    // Prune one-pixel threads left dangling next to the cut.
+    const r2 = Math.ceil(radius) + 2;
+    for (let j = Math.floor(gj) - r2; j <= gj + r2; j++)
+      for (let i = Math.floor(gi) - r2; i <= gi + r2; i++) {
+        if (i < 0 || j < 0 || i >= w || j >= h) continue;
+        const idx = j * w + i;
+        if (!col[idx]) continue;
+        const nb = (i > 0 && col[idx - 1] ? 1 : 0) + (i < w - 1 && col[idx + 1] ? 1 : 0) +
+          (j > 0 && col[idx - w] ? 1 : 0) + (j < h - 1 && col[idx + w] ? 1 : 0);
+        if (nb <= 1) { col[idx] = 0; removed.push(idx); }
+      }
     piece.count -= removed.length;
     for (const idx of removed) {
+      if (piece.zone[idx]) this.zoneHits |= 1 << piece.zone[idx];
       const i = idx % w, j = (idx / w) | 0;
       if (i > 0) piece.expose(idx - 1, char);
       if (i < w - 1) piece.expose(idx + 1, char);
@@ -466,7 +516,8 @@ class Ragdoll {
     return removed.length;
   }
 
-  // Flood-fill a piece; if it fell apart, each island becomes its own body.
+  // Flood-fill a piece (4-connected). Every island becomes its own body, and
+  // an island only stays on a joint if it still has pixels touching it.
   checkSplit(piece) {
     const { w, h, col } = piece;
     const label = new Int32Array(w * h).fill(-1);
@@ -477,16 +528,11 @@ class Ragdoll {
       label[s] = id;
       for (let q = 0; q < list.length; q++) {
         const idx = list[q], i = idx % w, j = (idx / w) | 0;
-        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
-          const ni = i + di, nj = j + dj;
-          if ((!di && !dj) || ni < 0 || nj < 0 || ni >= w || nj >= h) continue;
-          const n = nj * w + ni;
-          if (col[n] && label[n] < 0) { label[n] = id; list.push(n); }
-        }
+        const nbs = [i > 0 ? idx - 1 : -1, i < w - 1 ? idx + 1 : -1, j > 0 ? idx - w : -1, j < h - 1 ? idx + w : -1];
+        for (const n of nbs) if (n >= 0 && col[n] && label[n] < 0) { label[n] = id; list.push(n); }
       }
       comps.push(list);
     }
-    if (comps.length === 1) return false;
     const F = piece.frame();
     const big = [];
     for (const c of comps) {
@@ -498,10 +544,9 @@ class Ragdoll {
       }
       piece.count -= c.length;
     }
-    if (big.length === 0) { this.pieces = this.pieces.filter((q) => q !== piece); this.refreshTopology(); return true; }
-    if (big.length === 1) return false;
+    if (big.length === 0) { this.pieces = this.pieces.filter((q) => q !== piece); this.refreshTopology('split', piece.bc.x, piece.bc.y); return true; }
 
-    // Which island keeps each original joint?
+    // Which island still touches each original joint?
     const lenG = piece.len / PX;
     const near = (c, gu, gv) => {
       let best = 1e9;
@@ -511,11 +556,14 @@ class Ragdoll {
       }
       return best;
     };
-    let ca = -1, cb = -1, da = 6.5, db = 6.5;
+    const REACH = 2.0 * 2.0;
+    let ca = -1, cb = -1, da = REACH, db = REACH;
     big.forEach((c, k) => {
       const x = near(c, 0, 0); if (x < da) { da = x; ca = k; }
       const y = near(c, lenG, 0); if (y < db) { db = y; cb = k; }
     });
+    if (big.length === 1 && ca === 0 && cb === 0) return false;
+
     const Fp = piece.framePrev();
     const out = big.map((c, k) => {
       let umin = 1e9, umax = -1e9, vs = 0;
@@ -536,7 +584,7 @@ class Ragdoll {
       for (const idx of c) { colN[idx] = col[idx]; expN[idx] = piece.exposed[idx]; }
       const len = pa === piece.a && pb === piece.b ? piece.len : dist(pa.x, pa.y, pb.x, pb.y);
       return new Piece(this, piece.name, pa, pb, {
-        w, h, ox: piece.ox + u0, oy: piece.oy + v0, col: colN, inner: piece.inner, exposed: expN,
+        w, h, ox: piece.ox + u0, oy: piece.oy + v0, col: colN, inner: piece.inner, zone: piece.zone, exposed: expN,
         wounds: piece.wounds.filter((idx) => colN[idx]), bleed: 1, len, origCount: piece.origCount,
       }, piece.z);
     });

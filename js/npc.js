@@ -6,17 +6,21 @@ const GUARD_LINES = ['HALT!', 'Hey. You.', 'Stay in your cell.', 'Uh... Subject 
 const SCI_SPOT_LINES = ['SUBJECT 09 IS LOOSE!', 'Oh no. Oh no no no.', 'SECURITY!!', 'It got out!'];
 const SCI_COWER_LINES = ['Please! I have a family!', 'I was following protocol!', 'Stay back!'];
 const PAIN_LINES = ['AAAGH!', 'MY LEG!', 'Get it out!', 'HELP ME!', 'Nnngh!'];
+const SOLDIER_LINES = ['CONTAINMENT BREACH!', 'Target sighted!', 'Put it down!', 'Open fire!'];
+const DOWNED_LINES = ['help... me...', 'I cant feel my legs', 'mom...', 'so cold...'];
+const MAX_HP = { guard: 100, scientist: 80, soldier: 120 };
 
 class NPC {
   constructor(game, type, x, groundY) {
     this.game = game;
-    this.type = type;                  // 'guard' | 'scientist'
+    this.type = type;                  // 'guard' | 'scientist' | 'soldier'
     this.facing = Math.random() < 0.5 ? -1 : 1;
     this.rag = new Ragdoll(x, groundY, this.facing, type);
     this.rag.game = game;
     this.rag.npc = this;
     this.rag.onChange = (kind, cx, cy) => this.onTopology(kind, cx, cy);
-    this.maxHp = type === 'scientist' ? 80 : 100;
+    this.rag.onImpact = (p, speed, n) => this.onImpact(p, speed, n);
+    this.maxHp = MAX_HP[type] || 100;
     this.hp = this.maxHp;
     this.alive = true;
     this.stun = 0;
@@ -38,6 +42,11 @@ class NPC {
     this.sawPlayerT = 0;
     this.textT = 0;
     this.main = this.rag.component(this.rag.pelvis);
+    this.downed = false;               // alive but can't get up (spine, heart, blood loss)
+    this.zoneShown = new Set();
+    this.gunCool = rand(0.5, 1.5);
+    this.aimAng = 0;
+    this.impactT = 0;
   }
 
   say(text, time = 2.2) { this.bubble = { text, t: time }; }
@@ -71,13 +80,85 @@ class NPC {
 
   addBleed(pixels) { this.bleedRate += pixels * 0.35; }
 
+  // Fatal areas: brain = instant, heart = fast bleed-out, spine = paralysed,
+  // arteries (neck, thigh) = heavy bleeding.
+  applyZones(mask, cause, x, y) {
+    if (!mask || !this.alive) return;
+    const g = this.game;
+    this.lastHitBy = cause;
+    const label = (t, c) => { if (!this.zoneShown.has(t)) { this.zoneShown.add(t); g.fx.text(x, y - 16, t, c); } };
+    if (mask & (1 << Z_BRAIN)) {
+      label('HEADSHOT', '#ff4050');
+      this.die(cause);
+      return;
+    }
+    if (mask & (1 << Z_HEART)) {
+      label('HEART HIT', '#ff4050');
+      this.bleedRate += 30;
+      this.goDown();
+    }
+    if (mask & (1 << Z_SPINE)) {
+      label('SPINE SEVERED', '#ffcf6a');
+      this.paralysed = true;
+      this.goDown();
+    }
+    if (mask & (1 << Z_ARTERY)) {
+      label('ARTERY', '#ff7a7a');
+      this.bleedRate += 9;
+    }
+  }
+
+  goDown() {
+    if (!this.alive) return;
+    this.downed = true;
+    this.knock(2);
+    if (!this.bubble) this.say(pick(DOWNED_LINES), 2);
+  }
+
+  // Slammed into something hard (thrown, rammed, fell).
+  onImpact(p, speed, n) {
+    if (this.impactT > 0 || !this.game) return;
+    this.impactT = 0.12;
+    const g = this.game;
+    const k = speed - 600;
+    if (speed > 800) {
+      g.blood.spray(p.x, p.y, n ? n.x : 0, n ? n.y : -1, Math.min(24, k / 25), 250, 1.1);
+      for (const q of this.rag.pieces) if (q.a === p || q.b === p) this.addBleed(q.exposeNear(p.x - (n ? n.x : 0) * p.r, p.y - (n ? n.y : 0) * p.r, speed > 1300 ? 1.8 : 1));
+      Sfx.thunk();
+    }
+    if (speed > 1350) {
+      // Hard enough to burst tissue.
+      const q = this.rag.pieces.find((q) => q.a === p || q.b === p);
+      if (q) {
+        const [gi, gj] = q.toGrid(p.x, p.y, q.frame());
+        this.rag.zoneHits = 0;
+        this.rag.burn(q, gi, gj, 1.6, 0.6, 0.1);
+        this.applyZones(this.rag.zoneHits, 'slam', p.x, p.y);
+      }
+    }
+    if (p.role === R.HEAD && speed > 1150 && this.alive) {
+      g.fx.text(p.x, p.y - 16, 'SKULL CRACKED', '#ff4050');
+      this.die('slam');
+    }
+    if (!this.alive) return;
+    this.knock(Math.min(3, 0.8 + k / 500));
+    this.damage(k * 0.05, 'slam');
+  }
+
   onImpaled(p, dx, dy, piece, idx) {
     this.knock(3);
-    this.damage(28, 'harpoon');
+    this.damage(22, 'harpoon');
     if (piece && idx >= 0) {
       const F = piece.frame();
       const [x, y] = piece.cellWorld(idx, F);
+      // The spike tears through a small area: any vital zone there counts.
+      const [hgi, hgj] = piece.toGrid(x, y, F);
+      let mask = 0;
+      for (let j = Math.floor(hgj - 1.5); j <= hgj + 1.5; j++)
+        for (let i = Math.floor(hgi - 1.5); i <= hgi + 1.5; i++)
+          if (i >= 0 && j >= 0 && i < piece.w && j < piece.h && piece.col[j * piece.w + i] && piece.zone[j * piece.w + i]) mask |= 1 << piece.zone[j * piece.w + i];
       this.addBleed(piece.exposeNear(x, y, 1.3));
+      this.applyZones(mask, 'harpoon', x, y);
       // Splash the surrounding pixels with blood.
       const [gi, gj] = piece.toGrid(x, y, F);
       for (let k = 0; k < 10; k++) {
@@ -85,7 +166,7 @@ class NPC {
         if (i >= 0 && j >= 0 && i < piece.w && j < piece.h) piece.stain(j * piece.w + i, pick(BLOOD_PX), 0.7);
       }
     }
-    if (this.alive && Math.random() < 0.8) this.say(pick(PAIN_LINES), 1.6);
+    if (this.alive && !this.downed && Math.random() < 0.8) this.say(pick(PAIN_LINES), 1.6);
     Sfx.scream();
   }
 
@@ -100,10 +181,11 @@ class NPC {
       this.textT = 0.5;
       const headGone = !this.main.has(r.head);
       g.fx.text(x, y - 20, headGone ? (this.main.has(r.joint[R.NECK]) ? 'DECAPITATED' : 'BISECTED') : 'SEVERED', '#ff4050');
-      g.shake(5);
+      g.shake(2);
       Sfx.rip();
     }
     if (!this.main.has(r.head)) { this.die(this.lastHitBy || kind); return; }
+    if (!this.main.has(r.pelvis) || !this.main.has(r.joint[R.NECK])) { this.die(this.lastHitBy || kind); return; }
     if (lost && this.alive) {
       this.damage(25, this.lastHitBy || kind);
       this.knock(4);
@@ -114,7 +196,7 @@ class NPC {
   headIntact() {
     let n = 0, o = 0;
     for (const q of this.rag.pieces) if (q.name === 'head' && this.main.has(q.a)) { n += q.count; o = q.origCount; }
-    return o === 0 || n > o * 0.45;
+    return o === 0 || n > o * 0.8;
   }
 
   seesPlayer(range) {
@@ -130,23 +212,29 @@ class NPC {
   update(dt) {
     this.t += dt;
     this.textT -= dt;
+    this.impactT -= dt;
     if (this.bubble && (this.bubble.t -= dt) <= 0) this.bubble = null;
     const r = this.rag;
     if (!this.alive) return;
+    // Downed from wounds = bleeding out; a pure spine injury just paralyses.
+    if (this.downed && this.hp < this.maxHp * 0.25) this.bleedRate = Math.max(this.bleedRate, 1.8);
     if (this.bleedRate > 0) {
       this.damage(this.bleedRate * dt, this.lastHitBy || 'bleeding');
-      this.bleedRate *= Math.exp(-dt * 0.15);
+      this.bleedRate *= Math.exp(-dt * (this.downed ? 0.03 : 0.15));
     }
     if (!this.alive) return;
     if (!this.main.has(r.head) || !this.headIntact()) { this.die(this.lastHitBy || 'trauma'); return; }
 
     this.stun -= dt;
     this.flinch = Math.max(0, this.flinch - dt * 2);
-    if (r.pinned()) { this.drive = 0; this.struggle(dt); return; }
-    const held = r.parts.some((p) => p.held);
-    if (this.stun > 0 || this.grabbed || held || !this.legsIntact()) {
+    if (this.hp < this.maxHp * 0.25 && !this.downed) this.goDown();
+    const pinned = r.parts.some((p) => p.pin && this.main.has(p));
+    if (pinned) { this.drive = 0; this.struggle(this.downed ? dt * 0.3 : dt); return; }
+    const held = r.parts.some((p) => p.held && this.main.has(p));
+    if (this.stun > 0 || this.grabbed || held || this.downed || !this.legsIntact()) {
       this.drive = 0;
       if (this.grabbed || held) this.struggle(dt * 0.5);
+      else if (this.downed) this.writhe(dt);
       return;
     }
 
@@ -164,6 +252,7 @@ class NPC {
     this.drive = Math.min(1, this.drive + dt * 0.9);
 
     if (this.type === 'scientist') this.thinkScientist(dt);
+    else if (this.type === 'soldier') this.thinkSoldier(dt);
     else this.thinkGuard(dt);
 
     this.moveRoot(dt);
@@ -183,6 +272,36 @@ class NPC {
     if (this.modeT <= 0) {
       this.modeT = rand(5, 10);
       if (this.seesPlayer(420) && Math.random() < 0.6) this.say(pick(GUARD_LINES));
+    }
+  }
+
+  armed() {
+    const J = this.rag.joint;
+    return this.main.has(J[R.HAND_F]) && this.main.has(J[R.ELBOW_F]);
+  }
+
+  thinkSoldier(dt) {
+    const pl = this.game.player;
+    const sees = !pl.dead && this.seesPlayer(560);
+    this.speed = 0;
+    this.gunCool -= dt;
+    if (sees) {
+      if (this.mode !== 'attack') { this.mode = 'attack'; this.say(pick(SOLDIER_LINES), 1.6); this.gunCool = Math.max(this.gunCool, 0.5); }
+      this.sawPlayerT = 3;
+      this.facing = pl.x < this.rootX ? -1 : 1;
+      const N = this.rag.joint[R.NECK];
+      this.aimAng = Math.atan2(pl.y - 60 - N.y, (pl.x - N.x) * this.facing);
+      const d = Math.abs(pl.x - this.rootX);
+      if (d < 140 && this.pathClear(-this.facing)) { this.speed = 60; this.backing = true; }
+      else this.backing = false;
+      if (this.gunCool <= 0 && this.armed()) {
+        this.gunCool = rand(0.55, 0.95);
+        this.game.npcShoot(this);
+      }
+    } else {
+      this.sawPlayerT -= dt;
+      this.backing = false;
+      if (this.sawPlayerT <= 0) this.mode = 'idle';
     }
   }
 
@@ -220,8 +339,9 @@ class NPC {
   }
 
   moveRoot(dt) {
-    if (this.speed > 0 && this.pathClear(this.facing)) {
-      this.rootX += this.facing * this.speed * dt * this.drive;
+    const dir = this.backing ? -this.facing : this.facing;
+    if (this.speed > 0 && this.pathClear(dir)) {
+      this.rootX += dir * this.speed * dt * this.drive;
       this.walkPhase += dt * this.speed * 0.075;
     } else {
       this.walkPhase *= 0.9;
@@ -256,6 +376,15 @@ class NPC {
       const w = Math.sin(t * 7) * 1.3;
       P[R.ELBOW_F] = [5.5, -27]; P[R.HAND_F] = [7 + w, -33.5];
     }
+    if (this.type === 'soldier' && this.mode === 'attack') {
+      // Both hands on the pistol, pointed at the player.
+      const ca = Math.cos(this.aimAng), sa = Math.sin(this.aimAng);
+      const N = P[R.NECK];
+      P[R.ELBOW_F] = [N[0] + ca * 5.5, N[1] + sa * 5.5 + 1];
+      P[R.HAND_F] = [N[0] + ca * 11, N[1] + sa * 11];
+      P[R.ELBOW_B] = [N[0] + ca * 4.5, N[1] + sa * 4.5 + 2];
+      P[R.HAND_B] = [N[0] + ca * 9.5, N[1] + sa * 9.5 + 0.5];
+    }
     if (this.type === 'scientist' && this.mode === 'flee') {
       const j = Math.sin(t * 25) * 0.8;
       P[R.ELBOW_F] = [3, -36]; P[R.HAND_F] = [3.5 + j, -42];
@@ -285,6 +414,16 @@ class NPC {
     }
   }
 
+  // Downed: weak twitching and moaning while bleeding out.
+  writhe(dt) {
+    this.struggleT -= dt;
+    if (this.struggleT > 0) return;
+    this.struggleT = rand(0.3, 0.9);
+    const free = this.rag.parts.filter((p) => !p.pin && !p.held && this.main.has(p) && p.role >= 0 && (!this.paralysed || p.role < R.KNEE_B));
+    if (free.length) { const p = pick(free); p.impulse(rand(-1, 1) * 120, rand(-1, 0.2) * 120); }
+    if (Math.random() < 0.08 && !this.bubble) this.say(pick(DOWNED_LINES), 2);
+  }
+
   // Flailing while nailed to something.
   struggle(dt) {
     this.struggleT -= dt;
@@ -298,7 +437,18 @@ class NPC {
     if (Math.random() < 0.03 && !this.bubble) this.say(pick(PAIN_LINES), 1.4);
   }
 
-  render(fb) { this.rag.render(fb); }
+  render(fb) {
+    this.rag.render(fb);
+    if (this.type === 'soldier' && this.main.has(this.rag.joint[R.HAND_F])) {
+      // Pistol in the front hand, pointing along the forearm.
+      const H = this.rag.joint[R.HAND_F], E = this.rag.joint[R.ELBOW_F];
+      const d = dist(E.x, E.y, H.x, H.y) || 1;
+      const ux = (H.x - E.x) / d, uy = (H.y - E.y) / d;
+      const x = H.x / PX, y = H.y / PX;
+      fb.line(x, y, x + ux * 4, y + uy * 4, PISTOL_C);
+      fb.put(x - uy * this.facing, y + ux * this.facing, PISTOL_C);
+    }
+  }
 
   renderBubble(ctx, view) {
     if (!this.bubble || !this.alive) return;
@@ -314,3 +464,5 @@ class NPC {
     pixelText(ctx, text, x + 3, y + 2, '#1b2233');
   }
 }
+
+const PISTOL_C = hexc('#16181c');

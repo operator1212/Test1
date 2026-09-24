@@ -58,8 +58,14 @@ function solveDist(c) {
 
 function collideParticle(p, map, friction) {
   if (p.pin || p.held) return;
+  const vx0 = p.x - p.px, vy0 = p.y - p.py;
   const n = map.pushCircle(p);
   p.contact = n;
+  if (n) {
+    // Remember how hard we hit (px/s into the surface) for slam damage.
+    const vn0 = -(vx0 * n.x + vy0 * n.y) / DT;
+    if (vn0 > (p.impact || 0)) { p.impact = vn0; p.impactN = n; }
+  }
   if (n && friction > 0) {
     const vx = p.x - p.px, vy = p.y - p.py;
     const vn = vx * n.x + vy * n.y;
