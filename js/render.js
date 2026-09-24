@@ -84,6 +84,26 @@ class FrameBuffer {
   }
 }
 
+// Fill a polygon given in art-space points (even-odd rule). alpha < 1 blends.
+function fillPoly(fb, pts, c, alpha = 1) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
+  const n = pts.length;
+  for (let y = Math.floor(y0); y <= y1; y++) {
+    const py = y + 0.5;
+    for (let x = Math.floor(x0); x <= x1; x++) {
+      const px = x + 0.5;
+      let inside = false;
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const a = pts[i], b = pts[j];
+        if ((a.y > py) !== (b.y > py) && px < (b.x - a.x) * (py - a.y) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      if (!inside) continue;
+      if (alpha >= 1) fb.put(x, y, c); else fb.blend(x, y, c, alpha);
+    }
+  }
+}
+
 // ------------------------------------------------------------ 3x5 font
 const FONT = {
   A: '.#.#.#####.##.#',

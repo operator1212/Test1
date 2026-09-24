@@ -27,7 +27,7 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 | Shift | dash (hold WASD to pick a direction). One air dash per jump, usable off walls; it rams NPCs |
 | Mouse | aim |
 | LMB | fire the current weapon |
-| Tab | switch creature (Subject 09 / Worm) |
+| Tab | switch creature (Subject 09 / Worm / Eye / Slime / Crystal) |
 | RMB (hold) | tentacle grapple: latch onto a surface and swing like a pendulum. Flick the mouse to throw your momentum, A/D to pump, W/S to climb or let out rope, release to fling. Hitting a body grabs it instead (swing it with the mouse, release to throw) |
 | E / hold E (while holding) | rip the grabbed part off a living NPC, or hold E to pull a loose part or corpse to your mouth and eat it bite by bite to heal |
 | 1-5 / Q / mouse wheel | harpoon / laser / shotgun / saw / bile bomb |
@@ -110,9 +110,28 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
       mouth, still kicking, and biting down is a crushing, usually fatal bite.
     - **Guns:** carried clamped in its jaws.
     - **Grapple:** none for now; it's planned as a later upgrade.
-  - **Planned:** a floating eye with tendrils that rip chunks out fast, a fly swarm that eats
-    single pixels, a slime that traps and dissolves whatever gets stuck in it, and a crystal
-    creature whose shards grow inside wounds and burst them.
+  - **Eye** (`js/creatures.js`): a floating eyeball that flies freely, with an optic nerve
+    trailing behind it.
+    - **Tendrils (hold LMB):** 3-6 tendrils lash out and each rips small chunks out of whoever
+      you aim at, very fast. The torn-off bits fly back into the eye and feed it.
+    - **Guns:** hang from a nerve under the eye.
+  - **Slime:** a soft-body blob that wobbles, squishes on landing and squeezes through vents.
+    - **Engulf:** anyone who touches it gets stuck inside, visible through the goo and still
+      kicking.
+    - **Dissolve:** hold LMB to melt what's inside, pixel by pixel.
+    - **Spit:** E spits everything out.
+    - **Guns:** float inside the goo.
+  - **Crystal:** a heavy, faceted cluster walking on crystal spike legs, with armour that
+    chips when hit.
+    - **Shards (tap LMB):** shards lodge in bodies, grow (pushing flesh pixels out and
+      triggering vital zones), then shatter the wound.
+    - **Lance (hold, then release):** a crystal lance stabs a line through everything in front
+      of it.
+    - **Guns:** grown onto a crystal arm.
+  - **Growth:** every creature grows as it eats, and the extra size shows up differently for
+    each one: more tendrils, a bigger engulf capacity, more shards.
+  - **Planned:** a fly swarm that eats individual pixels.
+
 - **Focus**: slow motion (F) drains a focus meter, which refills slowly and gets topped up
   by kills.
 - **Movement (adhesive core)** (`js/player.js`):
@@ -151,6 +170,7 @@ js/npc.js       NPC brains and pose-driven active ragdoll
 js/weapons.js   harpoon spikes, tentacle, laser constants
 js/player.js    shared creature core (movement, health, weapons) + Subject 09
 js/worm.js      the Worm creature
+js/creatures.js Eye, Slime and Crystal creatures
 js/game.js      world step, camera, objectives, HUD
 js/main.js      boot and fixed-timestep loop
 ```

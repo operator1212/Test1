@@ -26,6 +26,9 @@ const WEAPONS = [
   { name: 'BILE', cool: 0.9, kind: 'bile' },
 ];
 
+// Weapon kinds that are a creature's own attack (slot 1) rather than a stolen gun.
+const NATURAL_KINDS = new Set(['bite', 'tendrils', 'dissolve', 'shards']);
+
 function approach(v, target, amount) {
   return v < target ? Math.min(target, v + amount) : Math.max(target, v - amount);
 }
@@ -257,8 +260,9 @@ class Player {
     this.recoil = Math.max(0, this.recoil - dt * 6);
     this.firingLaser = false;
     const kind = this.wkind();
-    this.natural(dt, kind === 'bite' && Input.mouse.down[0], kind === 'bite' && Input.mouse.pressed[0], kind === 'bite' && Input.mouse.released[0]);
-    if (kind === 'bite') {
+    const nat = NATURAL_KINDS.has(kind);
+    this.natural(dt, nat && Input.mouse.down[0], nat && Input.mouse.pressed[0], nat && Input.mouse.released[0]);
+    if (nat) {
       this.heat = Math.max(0, this.heat - 0.45 * dt);
     } else if (kind === 'laser') {
       if (Input.mouse.down[0] && !this.overheat) {
@@ -353,7 +357,7 @@ class Player {
           }
         }
         const vt = this.vx * t.x + this.vy * t.y;
-        const nvt = approach(vt, dir * MOVE_SPEED, (dir ? 3000 : 2400) * dt * grip);
+        const nvt = approach(vt, dir * (this.moveSpeed || MOVE_SPEED), (dir ? 3000 : 2400) * dt * grip);
         this.vx += t.x * (nvt - vt); this.vy += t.y * (nvt - vt);
       }
       if (grip < 1) {
@@ -397,6 +401,13 @@ class Player {
   }
 
   wkind() { return this.weapons[this.weapon].kind; }
+
+  // Eating: heal and grow. Creatures that grow implement grow().
+  feed(px) {
+    this.mass += px;
+    this.heal(px * 0.25);
+    if (this.grow) this.grow();
+  }
 
   // Natural (creature) attack; Subject 09 has none.
   natural() {}
@@ -614,7 +625,7 @@ class Player {
     const x = h.x / PX, y = h.y / PX;
     const nx = -a.y, ny = a.x;
     const kind = this.wkind();
-    if (kind === 'bite') return;
+    if (NATURAL_KINDS.has(kind)) return;
     if (kind === 'harpoon') {
       fb.line(x - a.x * 2, y - a.y * 2, x + a.x * 7, y + a.y * 7, GUN_DARK);
       fb.line(x - a.x * 2 + nx * 0.9, y - a.y * 2 + ny * 0.9, x + a.x * 6 + nx * 0.9, y + a.y * 6 + ny * 0.9, GUN_MID);

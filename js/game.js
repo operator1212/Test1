@@ -3,7 +3,7 @@
 
 const ART_VIEW_H = 270;
 const KILL_SLOW_TIME = 0.6;
-const CREATURES = () => [Player, Worm];      // target vertical resolution in art pixels
+const CREATURES = () => [Player, Worm, Eye, Slime, Crystal];      // target vertical resolution in art pixels
 const SOLVER_ITERS = 8;
 
 class Game {
@@ -279,6 +279,36 @@ class Game {
     if (g === null) { Sfx.denied(); return; }
     this.spawnNPC(type, m.x, g);
     this.fx.text(m.x, g - 130, '+ ' + type.toUpperCase(), '#9fd0ff');
+  }
+
+  // Rip pixels out of any body at a world point (creature attacks). radius in
+  // art px. Returns the number of pixels removed; living victims take damage,
+  // bleed, get their vital zones checked and react to the hit.
+  burnAt(x, y, radius, prob, char, cause, dmgPerPx, dx = 0, dy = 0) {
+    let total = 0;
+    for (const npc of this.npcs) {
+      const rag = npc.rag;
+      rag.resetZones();
+      let hurt = 0;
+      for (const q of rag.pieces.slice()) {
+        if (!rag.pieces.includes(q)) continue;
+        if (dist(x, y, q.bc.x, q.bc.y) > q.bc.r + radius * PX) continue;
+        const [gi, gj] = q.toGrid(x, y, q.frame());
+        if (gi < -radius || gj < -radius || gi > q.w + radius || gj > q.h + radius) continue;
+        const living = npc.alive && npc.main.has(q.a);
+        const removed = rag.burn(q, gi, gj, radius, prob, char);
+        if (!removed) continue;
+        total += removed;
+        if (living) hurt += removed;
+      }
+      if (hurt && npc.alive) {
+        npc.addBleed(hurt);
+        npc.damage(hurt * dmgPerPx, cause);
+        npc.applyZones(rag.zoneHits, cause, x, y);
+        if (dx || dy) npc.hitReact(dx, dy, 0.4);
+      }
+    }
+    return total;
   }
 
   // Shared hit resolution for bullets/pellets: punch a hole (and a short
@@ -569,10 +599,10 @@ class Game {
         ['WASD', 'MOVE ALONG FLOORS, WALLS, CEILINGS'], ['INTO A WALL', 'RUNS UP IT AND OVER THE TOP'],
         ['AWAY', 'PUSH OFF A WALL/CEILING TO LET GO'], ['SPACE', 'LEAP OFF WHATEVER YOU HOLD'],
         ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
-        ['LMB', 'FIRE / WORM: HOLD OPEN, RELEASE BITES'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
+        ['LMB', 'FIRE / CREATURE ATTACK (SLOT 1)'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
         ['SWINGING', 'FLICK MOUSE, A/D PUMP, W/S ROPE'],
         ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION (USES FOCUS)'],
-        ['TAB', 'SWITCH CREATURE (SUBJECT 09 / WORM)'], ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
+        ['TAB', 'SWITCH CREATURE'], ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
         ['X / R', 'CLEAR HARPOONS / RESET'], ['H', 'HIDE HELP'],
       ];
       const bw = 192, x = W - bw - 4;

@@ -49,7 +49,7 @@ class Worm extends Player {
     this.segN = Math.min(22, 12 + Math.floor(this.mass / 260));
   }
 
-  grow(px) {
+  grow(px = 0) {
     const before = this.size;
     this.mass += px;
     this.size = Math.min(WORM_MAX_SIZE, 1 + this.mass / 900);
@@ -60,9 +60,9 @@ class Worm extends Player {
   }
 
   resetBody() {
-    this.path = [{ x: this.x, y: this.y, ux: 0, uy: -1 }];
+    this.path = [{ x: this.x, y: this.y, ux: 0, uy: -1, air: false }];
     this.segs = [];
-    for (let i = 0; i < this.segN; i++) this.segs.push({ x: this.x - i * this.spacing, y: this.y, ux: 0, uy: -1 });
+    for (let i = 0; i < this.segN; i++) this.segs.push({ x: this.x - i * this.spacing, y: this.y, ux: 0, uy: -1, vx: 0, vy: 0 });
   }
 
   buildPieces() { this.pieces = []; }
@@ -255,37 +255,59 @@ class Worm extends Player {
     this.flip = this.headDir.x < 0 ? -1 : 1;
     this.hump += sp * (dt || 0) * 0.05;
 
-    // Record where the head has been (with the surface normal there).
-    const up = this.grip > 0.25 ? this.up : { x: 0, y: -1 };
+    // Record where the head has been (with the surface normal there, and
+    // whether it was actually on a surface or flying through the air).
+    const onSurf = this.grip > 0.25;
+    const up = onSurf ? this.up : { x: 0, y: -1 };
     const P = this.path;
-    if (!P.length || dist(P[0].x, P[0].y, this.x, this.y) > 1.5) P.unshift({ x: this.x, y: this.y, ux: up.x, uy: up.y });
-    else { P[0].x = this.x; P[0].y = this.y; }
+    if (!P.length || dist(P[0].x, P[0].y, this.x, this.y) > 1.5) P.unshift({ x: this.x, y: this.y, ux: up.x, uy: up.y, air: !onSurf });
+    else { P[0].x = this.x; P[0].y = this.y; P[0].air = !onSurf; }
 
-    // Lay the segments along that path, pressed down onto the surface.
-    while (this.segs.length < this.segN) { const t = this.segs[this.segs.length - 1]; this.segs.push({ ...t }); }
+    while (this.segs.length < this.segN) { const t = this.segs[this.segs.length - 1]; this.segs.push({ ...t, vx: 0, vy: 0 }); }
     const hr = this.headR();
-    let seg = 0, acc = 0;
-    for (let i = 0; i < P.length - 1 && seg < this.segs.length; i++) {
+    const S = this.segs;
+    S[0].x = this.x; S[0].y = this.y; S[0].ux = up.x; S[0].uy = up.y;
+    // Where each segment would sit along the path (null if the path is too short).
+    const targets = new Array(S.length).fill(null);
+    let seg = 1, acc = 0;
+    for (let i = 0; i < P.length - 1 && seg < S.length; i++) {
       const a = P[i], b = P[i + 1];
       const L = dist(a.x, a.y, b.x, b.y);
-      while (seg < this.segs.length && acc + L >= seg * this.spacing) {
+      while (seg < S.length && acc + L >= seg * this.spacing) {
         const t = L > 0 ? (seg * this.spacing - acc) / L : 0;
         const ux = lerp(a.ux, b.ux, t), uy = lerp(a.uy, b.uy, t);
-        const sink = (hr - this.segR(seg)) * PX * (seg > 0 ? 1 : 0);
-        const S = this.segs[seg];
-        S.x = lerp(a.x, b.x, t) - ux * sink; S.y = lerp(a.y, b.y, t) - uy * sink;
-        S.ux = ux; S.uy = uy;
+        const sink = (hr - this.segR(seg)) * PX;
+        targets[seg] = { x: lerp(a.x, b.x, t) - ux * sink, y: lerp(a.y, b.y, t) - uy * sink, ux, uy, air: a.air || b.air };
         seg++;
       }
       acc += L;
     }
-    // Path too short (just spawned): trail the rest straight behind.
-    if (seg === 0) { const S0 = this.segs[0]; S0.x = this.x; S0.y = this.y; S0.ux = up.x; S0.uy = up.y; seg = 1; }
-    for (; seg < this.segs.length; seg++) {
-      const pr = this.segs[seg - 1];
-      this.segs[seg].x = pr.x - this.flip * this.spacing; this.segs[seg].y = pr.y; this.segs[seg].ux = 0; this.segs[seg].uy = -1;
+    const map = this.game.map;
+    const kf = dt ? 1 - Math.exp(-dt * 22) : 1;
+    for (let i = 1; i < S.length; i++) {
+      const s = S[i], T = targets[i], prev = S[i - 1];
+      if (T && !T.air) {
+        // On a surface: hug the path (easing back if it had fallen off it).
+        s.x = lerp(s.x, T.x, kf); s.y = lerp(s.y, T.y, kf);
+        s.ux = T.ux; s.uy = T.uy; s.vx = 0; s.vy = 0;
+      } else if (dt) {
+        // Unsupported: fall, trail behind the segment in front, land on things.
+        s.vy = (s.vy || 0) + GRAVITY * 0.8 * dt;
+        s.vx = (s.vx || 0) * 0.98;
+        s.x += s.vx * dt; s.y += s.vy * dt;
+        const c = { x: s.x, y: s.y, r: this.segR(i) * PX };
+        const nrm = map.pushCircle(c);
+        if (nrm) { s.vx *= 0.7; if (nrm.y < -0.5) s.vy = Math.min(s.vy, 0); s.ux = nrm.x; s.uy = nrm.y; }
+        else { s.ux = 0; s.uy = -1; }
+        s.x = c.x; s.y = c.y;
+      }
+      // Chain: never further than one spacing from the segment in front.
+      const d = dist(prev.x, prev.y, s.x, s.y);
+      if (d > this.spacing) {
+        const k = (d - this.spacing) / d;
+        s.x -= (s.x - prev.x) * k; s.y -= (s.y - prev.y) * k;
+      }
     }
-    if (acc > this.spacing * (this.segs.length + 4)) P.length = Math.min(P.length, P.length - 1);
     while (P.length > 400) P.pop();
   }
 
