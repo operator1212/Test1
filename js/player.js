@@ -54,6 +54,9 @@ class Player {
     this.x = x; this.y = feetY - this.rideH;   // the core, roughly the pelvis
     this.weapons = this.constructor.weaponList || WEAPONS;
     this.creature = this.constructor.creatureName || 'SUBJECT 09';
+    this.hasTentacle = this.constructor.hasTentacle !== false;
+    this.coreR = CORE_R;               // collision radius (creatures that grow enlarge it)
+    this.mass = 0;                     // pixels eaten: creatures grow with it
     this.vx = 0; this.vy = 0;
     this.facing = 1;
     this.aim = { x: 1, y: 0 };
@@ -131,7 +134,7 @@ class Player {
   // Move the core with circle-vs-tile collision (used by the tentacle rope).
   moveBy(dx, dy) {
     const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 6));
-    const c = { x: this.x, y: this.y, r: CORE_R };
+    const c = { x: this.x, y: this.y, r: this.coreR };
     for (let i = 0; i < n; i++) {
       c.x += dx / n; c.y += dy / n;
       const nrm = this.game.map.pushCircle(c);
@@ -241,10 +244,12 @@ class Player {
     this.move(dt);
 
     // Tentacle.
-    if (Input.mouse.pressed[2]) this.tentacle.fire(this.aim.x, this.aim.y);
-    this.tentacle.update(dt, g);
-    this.tentacle.applyRope(g);
-    this.tentacle.updateEat(dt, g, Input.down('KeyE'), Input.hit('KeyE'));
+    if (this.hasTentacle) {
+      if (Input.mouse.pressed[2]) this.tentacle.fire(this.aim.x, this.aim.y);
+      this.tentacle.update(dt, g);
+      this.tentacle.applyRope(g);
+      this.tentacle.updateEat(dt, g, Input.down('KeyE'), Input.hit('KeyE'));
+    }
     this.biteT -= dt;
 
     // Weapons.
@@ -252,7 +257,7 @@ class Player {
     this.recoil = Math.max(0, this.recoil - dt * 6);
     this.firingLaser = false;
     const kind = this.wkind();
-    this.natural(dt, kind === 'bite' && Input.mouse.down[0], kind === 'bite' && Input.mouse.pressed[0]);
+    this.natural(dt, kind === 'bite' && Input.mouse.down[0], kind === 'bite' && Input.mouse.pressed[0], kind === 'bite' && Input.mouse.released[0]);
     if (kind === 'bite') {
       this.heat = Math.max(0, this.heat - 0.45 * dt);
     } else if (kind === 'laser') {
@@ -326,7 +331,7 @@ class Player {
       const dS = rd.hit ? rd.dist : REACH * 1.6;
       const ru = map.raycast(this.x, this.y, u.x, u.y, 140);
       this.roomUp = ru.hit ? ru.dist : 140;
-      const H = clamp((dS + this.roomUp) * 0.42, CORE_R + 3, this.rideH);
+      const H = clamp((dS + this.roomUp) * 0.42, this.coreR + 3, this.rideH);
       // Ride spring: hold the core at leg height above the surface (critically damped).
       const vn = this.vx * u.x + this.vy * u.y;
       const acc = rd.hit && dS < REACH * 1.2 ? ((H - dS) * 380 - vn * 38) * grip : 0;
@@ -382,7 +387,7 @@ class Player {
 
     // Integrate with circle collision.
     const steps = Math.max(1, Math.ceil(Math.hypot(this.vx, this.vy) * dt / 6));
-    const c = { x: this.x, y: this.y, r: CORE_R };
+    const c = { x: this.x, y: this.y, r: this.coreR };
     for (let i = 0; i < steps; i++) {
       c.x += this.vx * dt / steps; c.y += this.vy * dt / steps;
       const n = map.pushCircle(c);

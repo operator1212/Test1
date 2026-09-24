@@ -100,14 +100,16 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
   health, eating and the tentacle grapple. Each one adds its own body and a natural attack in
   weapon slot 1, and the stolen guns come after that.
   - **Subject 09:** the humanoid mutant, with a procedural body and guns in hand.
-  - **Worm:** a segmented body that follows its head over walls, around corners and through
-    vents, with a hump wave as it crawls.
-    - **Bite:** hold LMB to open the jaws. Pressing lunges forward, and anything in the mouth
-      is chewed away pixel by pixel, which heals you. The fatal zones apply, so a bite to the
-      throat opens an artery.
-    - **Growth:** eating grows the worm a segment every ~120 pixels.
+  - **Worm:**
+    - **Body:** the body is laid along the exact path its head travelled, pressed flat to
+      the surface it was on, so it flows over corners, up walls and across ceilings.
+    - **Bite:** hold LMB to open the jaws. Release to lunge and snap them shut, tearing out
+      a chunk of pixels that heals you. The fatal zones apply.
+    - **Growth:** eating makes it grow: longer, thicker, more health, and a bigger bite. Once
+      it's big enough, opening the jaws on someone catches them. You carry them in your
+      mouth, still kicking, and biting down is a crushing, usually fatal bite.
     - **Guns:** carried clamped in its jaws.
-    - **Grapple:** a tongue.
+    - **Grapple:** none for now; it's planned as a later upgrade.
   - **Planned:** a floating eye with tendrils that rip chunks out fast, a fly swarm that eats
     single pixels, a slime that traps and dissolves whatever gets stuck in it, and a crystal
     creature whose shards grow inside wounds and burst them.

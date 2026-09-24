@@ -549,7 +549,7 @@ class Game {
     const ax = 4 + pl.weapons.length * 47;
     panel(ax, H - 20, 76, 16);
     const tn = pl.tentacle;
-    const ts = tn.state === 'attached' ? (tn.eating ? 'EATING' : tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
+    const ts = !pl.hasTentacle ? 'NO GRAPPLE' : tn.state === 'attached' ? (tn.eating ? 'EATING' : tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
     pixelText(g, ts, ax + 3, H - 17, '#ffb3b8');
     g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(ax + 3, H - 9, 70, 2);
     g.fillStyle = '#7fe0ff'; g.fillRect(ax + 3, H - 9, Math.round(70 * clamp(1 - pl.dashCool / 0.5, 0, 1)), 2);
@@ -569,7 +569,7 @@ class Game {
         ['WASD', 'MOVE ALONG FLOORS, WALLS, CEILINGS'], ['INTO A WALL', 'RUNS UP IT AND OVER THE TOP'],
         ['AWAY', 'PUSH OFF A WALL/CEILING TO LET GO'], ['SPACE', 'LEAP OFF WHATEVER YOU HOLD'],
         ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
-        ['LMB', 'FIRE WEAPON / BITE (WORM, HOLD)'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
+        ['LMB', 'FIRE / WORM: HOLD OPEN, RELEASE BITES'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
         ['SWINGING', 'FLICK MOUSE, A/D PUMP, W/S ROPE'],
         ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION (USES FOCUS)'],
         ['TAB', 'SWITCH CREATURE (SUBJECT 09 / WORM)'], ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
