@@ -20,6 +20,7 @@ class Game {
     this.time = 0;
     this.timeScale = 1;
     this.slowPulse = 0;       // real seconds left of the kill slow-down
+    this.focus = 1;           // slow-motion meter (0..1)
     this.shakeAmt = 0;
     this.showHelp = true;
     this.shakeOn = true;
@@ -140,6 +141,11 @@ class Game {
   // Time scale for this frame: the F toggle times a brief eased slow-down after
   // killing someone who was attacking you.
   frameTimeScale(realDt) {
+    // Slow motion burns focus; it refills slowly (and from kills) when off.
+    if (this.timeScale < 1) {
+      this.focus -= realDt * 0.22;
+      if (this.focus <= 0) { this.focus = 0; this.timeScale = 1; this.message('FOCUS EMPTY', '#ff8a3a'); }
+    } else this.focus = Math.min(1, this.focus + realDt * 0.05);
     let k = 1;
     if (this.slowPulse > 0) {
       this.slowPulse = Math.max(0, this.slowPulse - realDt);
@@ -151,6 +157,7 @@ class Game {
 
   onNpcDeath(npc, cause) {
     const h = npc.rag.head;
+    this.focus = Math.min(1, this.focus + 0.15);
     if (npc.type === 'soldier' && (npc.mode === 'attack' || this.time - (npc.lastShotT || -99) < 4)) {
       this.slowPulse = KILL_SLOW_TIME;
       Sfx.tone(180, 60, 0.4, 0.3, 'sine');
@@ -177,7 +184,11 @@ class Game {
     this.time += dt;
     const I = Input;
     if (I.hit('KeyH')) this.showHelp = !this.showHelp;
-    if (I.hit('KeyF')) { this.timeScale = this.timeScale < 1 ? 1 : 0.3; this.message(this.timeScale < 1 ? 'SLOW MOTION' : 'NORMAL SPEED'); }
+    if (I.hit('KeyF')) {
+      if (this.timeScale < 1) this.timeScale = 1;
+      else if (this.focus > 0.1) this.timeScale = 0.3;
+      else { Sfx.denied(); this.message('FOCUS EMPTY', '#ff8a3a'); }
+    }
     if (I.hit('KeyG')) this.spawnAtCursor('guard');
     if (I.hit('KeyT')) this.spawnAtCursor('scientist');
     if (I.hit('KeyY')) this.spawnAtCursor('soldier');
@@ -494,6 +505,11 @@ class Game {
     g.fillStyle = pl.god ? '#ffe36b' : pl.hp > 35 ? '#e8414f' : (Math.floor(this.time * 6) % 2 ? '#ff8a8a' : '#e8414f');
     g.fillRect(7, 41, Math.round(84 * clamp(pl.hp / pl.maxHp, 0, 1)), 4);
     pixelText(g, pl.god ? 'GOD' : String(Math.ceil(pl.hp)), 97, 40, '#ffffff');
+    panel(4, 50, 90, 8);
+    g.fillStyle = '#10243a'; g.fillRect(7, 53, 84, 2);
+    g.fillStyle = this.timeScale < 1 ? '#ffd84a' : '#7fb8ff';
+    g.fillRect(7, 53, Math.round(84 * this.focus), 2);
+    pixelText(g, 'FOCUS', 97, 51, this.timeScale < 1 ? '#ffd84a' : '#9fc2ff');
 
     // Weapons.
     WEAPONS.forEach((wpn, i) => {
@@ -532,8 +548,9 @@ class Game {
         ['WASD', 'MOVE ALONG FLOORS, WALLS, CEILINGS'], ['INTO A WALL', 'RUNS UP IT AND OVER THE TOP'],
         ['AWAY', 'PUSH OFF A WALL/CEILING TO LET GO'], ['SPACE', 'LEAP OFF WHATEVER YOU HOLD'],
         ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
-        ['LMB', 'FIRE WEAPON'], ['RMB HOLD', 'TENTACLE: LATCH/ZIP, GRAB + SWING'],
-        ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION'],
+        ['LMB', 'FIRE WEAPON'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
+        ['SWINGING', 'FLICK MOUSE, A/D PUMP, W/S ROPE'],
+        ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION (USES FOCUS)'],
         ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
         ['X / R', 'CLEAR HARPOONS / RESET'], ['H', 'HIDE HELP'],
       ];

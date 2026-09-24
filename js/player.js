@@ -74,6 +74,8 @@ class Player {
     this.roomUp = 200;
     this.side = 1;                   // which way along the surface we face
     this.onGround = false;
+    this.flickV = { x: 0, y: 0 };     // mouse velocity (world px/s) for grapple flicks
+    this.lastMouse = null;
     this.tentacle = new Tentacle(this);
     this.flip = 1;
     this.pts = RAG_REST.map(([ox, oy]) => ({ x: x + ox, y: feetY + oy }));
@@ -218,6 +220,13 @@ class Player {
     const ad = dist(s.x, s.y, m.x, m.y) || 1;
     this.aim = { x: (m.x - s.x) / ad, y: (m.y - s.y) / ad };
     if (Math.abs(this.aim.x) > 0.05) this.facing = sign(this.aim.x);
+    // Mouse velocity, for flicks while swinging.
+    const mx = Input.mouse.x, my = Input.mouse.y, vs = g.view.s;
+    if (this.lastMouse) {
+      const fx = (mx - this.lastMouse.x) / vs * PX / dt, fy = (my - this.lastMouse.y) / vs * PX / dt;
+      this.flickV.x = lerp(this.flickV.x, fx, 0.35); this.flickV.y = lerp(this.flickV.y, fy, 0.35);
+    }
+    this.lastMouse = { x: mx, y: my };
 
     // Weapon select.
     for (let i = 0; i < WEAPONS.length; i++) if (Input.hit('Digit' + (i + 1))) this.weapon = i;
@@ -273,7 +282,7 @@ class Player {
     const sen = this.sense();
     let grip = sen.n ? clamp(sen.w * 2.6, 0, 1) : 0;
     if (this.detachT > 0 || this.dashT > 0) grip = 0;
-    if (roped) grip = Math.min(grip, 0.15);
+    if (roped && this.tentacle.taut) grip = 0;
     // Push away from a wall/ceiling to let go of it.
     if (grip > 0 && il && sen.n.y > -0.7 && I.x * sen.n.x + I.y * sen.n.y > 0.6) { grip = 0; this.detachT = 0.15; }
 
@@ -336,8 +345,7 @@ class Player {
       if (grip < 1) {
         // Air control for the rest.
         const ax = ix, air = 1 - grip;
-        if (roped) this.vx += ax * 750 * dt;
-        else if (ax && ax * this.vx < AIR_SPEED) this.vx = approach(this.vx, ax * AIR_SPEED, 1500 * dt * air);
+        if (!(roped && this.tentacle.taut) && ax && ax * this.vx < AIR_SPEED) this.vx = approach(this.vx, ax * AIR_SPEED, 1500 * dt * air);
       }
     }
 
@@ -470,7 +478,11 @@ class Player {
       const th = Math.acos(clamp((this.roomUp - 4) / need, 0.05, 1));
       B = norm(u.x * Math.cos(th) + fx * Math.sin(th), u.y * Math.cos(th) + fy * Math.sin(th));
     } else if (!grounded) {
-      B = norm(this.vx * 0.0005, -1);
+      const tn = this.tentacle;
+      if (tn.swinging() && tn.taut) {
+        const a = tn.point();
+        B = norm(a.x - this.x, a.y - this.y);        // hang from the rope
+      } else B = norm(this.vx * 0.0005, -1);
     }
     const kb = dt ? 1 - Math.exp(-dt * 12) : 1;
     this.bodyUp = norm(lerp(this.bodyUp.x, B.x, kb), lerp(this.bodyUp.y, B.y, kb));

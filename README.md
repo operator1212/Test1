@@ -27,10 +27,10 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 | Shift | dash (hold WASD to pick a direction). One air dash per jump, usable off walls; it rams NPCs |
 | Mouse | aim |
 | LMB | fire the current weapon |
-| RMB (hold) | tentacle: latch onto terrain and zip or swing, or grab a body and swing it with the mouse (release to throw) |
+| RMB (hold) | tentacle grapple: latch onto a surface and swing like a pendulum. Flick the mouse to throw your momentum, A/D to pump, W/S to climb or let out rope, release to fling. Hitting a body grabs it instead (swing it with the mouse, release to throw) |
 | E / hold E (while holding) | rip the grabbed part off a living NPC, or hold E to pull a loose part or corpse to your mouth and eat it bite by bite to heal |
 | 1-5 / Q / mouse wheel | harpoon / laser / shotgun / saw / bile bomb |
-| F | slow motion |
+| F | slow motion. Uses the focus meter, which refills slowly and from kills |
 | G / T / Y | spawn a guard / scientist / armed soldier at the cursor |
 | K | god mode |
 | O | screen shake on/off |
@@ -86,9 +86,16 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
     through about one torso or two limbs before it sticks in someone.
   - **Bile bomb**: a lobbed acid sac that bursts, blowing chunks off anyone nearby and
     splattering green bile.
-- **Tentacle**: latch onto terrain to zip and swing, or grab any body part and swing it with the
-  mouse to slam or throw it. E rips the grabbed part off a living NPC. Hold E on a loose part
-  or corpse to pull it to your mouth and chew through it bite by bite, healing as you go.
+- **Tentacle grapple**:
+  - **Swinging:** latch onto terrain and swing on a real pendulum rope. It tensions up
+    automatically so the bottom of the arc clears the floor. A/D pump the swing, W/S climb
+    or let out rope. Flick the mouse to throw your momentum in the flick's direction.
+    Release to fling off with your momentum (plus a little lift).
+  - **Bodies:** grab any body part and swing it with the mouse to slam or throw it. E rips
+    the grabbed part off a living NPC. Hold E on a loose part or corpse to pull it to your
+    mouth and chew through it bite by bite, healing as you go.
+- **Focus**: slow motion (F) drains a focus meter, which refills slowly and gets topped up
+  by kills.
 - **Movement (adhesive core)** (`js/player.js`):
   - **The core:** your body is a small round core that feels every surface around it
     (ray casts in all directions) and floats at leg height above whatever it's on, held there

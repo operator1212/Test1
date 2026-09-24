@@ -3,7 +3,7 @@
 'use strict';
 
 const HARPOON_SPEED = 1650;
-const TENTACLE_SPEED = 2100;
+const TENTACLE_SPEED = 2900;
 const TENTACLE_RANGE = 620;
 const LASER_RANGE = 1100;
 
@@ -156,6 +156,7 @@ class Tentacle {
   attached() { return this.state === 'attached'; }
   attachedFixed() { return this.state === 'attached' && (this.anchor || (this.target && this.target.pin)); }
   holding() { return this.state === 'attached' && this.target && !this.target.pin; }
+  swinging() { return this.attachedFixed(); }
   point() { return this.anchor || this.target; }
 
   fire(dx, dy) {
@@ -174,6 +175,13 @@ class Tentacle {
       const p = this.target;
       p.impulse(p.vx * 0.35, p.vy * 0.35);
     }
+    if (throwIt && this.swinging() && this.taut) {
+      // Letting go mid-swing: keep the momentum with a little extra lift.
+      const pl = this.pl;
+      if (Math.hypot(pl.vx, pl.vy) > 250) { pl.vx *= 1.1; pl.vy = pl.vy * 1.1 - 90; }
+      pl.detachT = 0.15;
+    }
+    this.taut = false;
     this.npc = null; this.target = null; this.anchor = null;
     if (this.state !== 'idle') this.state = 'retract';
   }
@@ -199,7 +207,11 @@ class Tentacle {
       } else if (ray.hit) {
         this.anchor = { x: ray.x - d.x, y: ray.y - d.y };
         this.state = 'attached';
-        this.len = dist(o.x, o.y, this.anchor.x, this.anchor.y);
+        this.len = Math.max(40, dist(this.pl.x, this.pl.y, this.anchor.x, this.anchor.y) * 0.93);
+        // Keep the bottom of the swing arc off the floor: the rope tensions up to this.
+        const down = game.map.raycast(this.anchor.x, this.anchor.y + 2, 0, 1, 900);
+        this.maxLen = Math.max(40, (down.hit ? down.dist : 900) - 75);
+        this.flickCool = 0;
         game.fx.sparks(ray.x, ray.y, ray.nx, ray.ny, 4, 200, '#ff9aa0');
         Sfx.latch();
       } else {
@@ -208,8 +220,12 @@ class Tentacle {
       }
     } else if (this.state === 'attached') {
       if (!Input.mouse.down[2]) { this.release(true); return; }
-      if (this.anchor || this.target.pin) this.len = Math.max(28, this.len - 1100 * dt);
-      else this.len = Math.max(95, this.len - 1500 * dt);
+      if (this.anchor || this.target.pin) {
+        // W climbs the rope, S lets more out.
+        if (Input.down('KeyW') || Input.down('ArrowUp')) this.len = Math.max(40, this.len - 420 * dt);
+        if (Input.down('KeyS') || Input.down('ArrowDown')) { this.len = Math.min(TENTACLE_RANGE, this.len + 320 * dt); this.maxLen = Math.max(this.maxLen || 0, this.len); }
+        else if (this.anchor && this.len > this.maxLen) this.len = Math.max(this.maxLen, this.len - 650 * dt);
+      } else this.len = Math.max(95, this.len - 1500 * dt);
       const p = this.point();
       this.tip.x = p.x; this.tip.y = p.y;
       if (this.npc) { this.npc.grabbed = true; this.npc.stun = Math.max(this.npc.stun, 1); }
@@ -249,14 +265,30 @@ class Tentacle {
       p.x += dx; p.y += dy;
       return;
     }
+    // Swinging: a pendulum rope from the core to the anchor.
     const a = this.point();
-    const d = dist(o.x, o.y, a.x, a.y);
+    const d = dist(pl.x, pl.y, a.x, a.y);
     if (d < 1e-3) return;
-    const nx = (a.x - o.x) / d, ny = (a.y - o.y) / d;
-    // Zip: keep at least some speed toward the anchor while reeling.
-    const toward = pl.vx * nx + pl.vy * ny;
-    if (d > 60 && toward < 520) { pl.vx += nx * (520 - toward) * 0.2; pl.vy += ny * (520 - toward) * 0.2; }
+    const nx = (a.x - pl.x) / d, ny = (a.y - pl.y) / d;
+    this.taut = d >= this.len * 0.97;
+    const dt = DT;
+    if (this.taut) {
+      // A/D pump the swing.
+      const ax = (Input.down('KeyD') || Input.down('ArrowRight') ? 1 : 0) - (Input.down('KeyA') || Input.down('ArrowLeft') ? 1 : 0);
+      pl.vx += ax * 520 * dt;
+    }
+    // Flick the mouse to throw your momentum that way.
+    this.flickCool = (this.flickCool || 0) - dt;
+    const fv = pl.flickV, fs = Math.hypot(fv.x, fv.y);
+    if (fs > 2500 && this.flickCool <= 0) {
+      const imp = Math.min(fs * 0.08, 520);
+      pl.vx += fv.x / fs * imp; pl.vy += fv.y / fs * imp;
+      this.flickCool = 0.3;
+      game.fx.sparks(pl.x, pl.y, -fv.x, -fv.y, 5, 220, '#ff9aa0');
+      Sfx.whip();
+    }
     if (d <= this.len) return;
+    // Inextensible rope: pull back onto the circle, drop the outward velocity.
     const excess = d - this.len;
     pl.moveBy(nx * excess, ny * excess);
     const vr = pl.vx * nx + pl.vy * ny;       // negative = moving away from anchor
@@ -336,14 +368,14 @@ class Tentacle {
 
   render(fb) {
     if (this.state === 'idle') return;
-    const o = this.origin();
+    const o = this.pl.pts[R.HAND_B];
     const tx = this.tip.x, ty = this.tip.y;
     const d = dist(o.x, o.y, tx, ty) || 1;
     const ux = (tx - o.x) / d, uy = (ty - o.y) / d;
     const nx = -uy, ny = ux;
     const N = Math.max(4, Math.ceil(d / PX));
     const amp = this.state === 'attached' ? 0.6 : 3;
-    const slack = this.state === 'attached' && !this.holding() ? Math.max(0, this.len - d) : 0;
+    const slack = this.state === 'attached' && !this.holding() ? Math.max(0, this.len - dist(this.pl.x, this.pl.y, tx, ty)) : 0;
     const pts = [];
     for (let i = 0; i <= N; i++) {
       const f = i / N, env = Math.sin(Math.PI * f);
