@@ -19,11 +19,11 @@ const RIDE_H = 46;              // pelvis height above the surface when there's 
 const SENSE_RAYS = 20;
 const LEG_A = 8.6 * PX, LEG_B = 8.5 * PX, ARM_A = 6.7 * PX, ARM_B = 6.1 * PX;
 const WEAPONS = [
-  { name: 'HARPOON', cool: 0.42 },
-  { name: 'LASER', cool: 0 },
-  { name: 'SHOTGUN', cool: 0.75 },
-  { name: 'SAW', cool: 0.55 },
-  { name: 'BILE', cool: 0.9 },
+  { name: 'HARPOON', cool: 0.42, kind: 'harpoon' },
+  { name: 'LASER', cool: 0, kind: 'laser' },
+  { name: 'SHOTGUN', cool: 0.75, kind: 'shotgun' },
+  { name: 'SAW', cool: 0.55, kind: 'saw' },
+  { name: 'BILE', cool: 0.9, kind: 'bile' },
 ];
 
 function approach(v, target, amount) {
@@ -49,7 +49,11 @@ function ik2(ax, ay, bx, by, l1, l2, bendX, bendY) {
 class Player {
   constructor(game, x, feetY) {
     this.game = game;
-    this.x = x; this.y = feetY - RIDE_H;   // the core, roughly the pelvis
+    // Creature subclasses override these with static fields.
+    this.rideH = this.constructor.rideH || RIDE_H;
+    this.x = x; this.y = feetY - this.rideH;   // the core, roughly the pelvis
+    this.weapons = this.constructor.weaponList || WEAPONS;
+    this.creature = this.constructor.creatureName || 'SUBJECT 09';
     this.vx = 0; this.vy = 0;
     this.facing = 1;
     this.aim = { x: 1, y: 0 };
@@ -195,7 +199,7 @@ class Player {
 
   respawn() {
     const s = this.game.spawn;
-    this.x = s.x; this.y = s.y - RIDE_H; this.vx = this.vy = 0;
+    this.x = s.x; this.y = s.y - this.rideH; this.vx = this.vy = 0;
     this.hp = this.maxHp; this.dead = false;
     this.up = { x: 0, y: -1 }; this.bodyUp = { x: 0, y: -1 };
     for (const f of this.feet) f.planted = false;
@@ -229,9 +233,10 @@ class Player {
     this.lastMouse = { x: mx, y: my };
 
     // Weapon select.
-    for (let i = 0; i < WEAPONS.length; i++) if (Input.hit('Digit' + (i + 1))) this.weapon = i;
-    if (Input.hit('KeyQ')) this.weapon = (this.weapon + 1) % WEAPONS.length;
-    if (Input.wheel) this.weapon = (this.weapon + (Input.wheel > 0 ? 1 : WEAPONS.length - 1)) % WEAPONS.length;
+    const nw = this.weapons.length;
+    for (let i = 0; i < nw; i++) if (Input.hit('Digit' + (i + 1))) this.weapon = i;
+    if (Input.hit('KeyQ')) this.weapon = (this.weapon + 1) % nw;
+    if (Input.wheel) this.weapon = (this.weapon + (Input.wheel > 0 ? 1 : nw - 1)) % nw;
 
     this.move(dt);
 
@@ -246,7 +251,11 @@ class Player {
     this.cool -= dt;
     this.recoil = Math.max(0, this.recoil - dt * 6);
     this.firingLaser = false;
-    if (this.weapon === 1) {
+    const kind = this.wkind();
+    this.natural(dt, kind === 'bite' && Input.mouse.down[0], kind === 'bite' && Input.mouse.pressed[0]);
+    if (kind === 'bite') {
+      this.heat = Math.max(0, this.heat - 0.45 * dt);
+    } else if (kind === 'laser') {
       if (Input.mouse.down[0] && !this.overheat) {
         this.firingLaser = true;
         this.heat += 0.3 * dt;
@@ -257,7 +266,7 @@ class Player {
       if (Input.mouse.pressed[0] && this.overheat) Sfx.denied();
     } else {
       this.heat = Math.max(0, this.heat - 0.45 * dt);
-      if (Input.mouse.down[0] && this.cool <= 0) this.fire(this.weapon);
+      if (Input.mouse.down[0] && this.cool <= 0) this.fire(kind);
     }
     if (this.overheat && this.heat < 0.3) this.overheat = false;
     Sfx.laserOn(this.firingLaser);
@@ -317,7 +326,7 @@ class Player {
       const dS = rd.hit ? rd.dist : REACH * 1.6;
       const ru = map.raycast(this.x, this.y, u.x, u.y, 140);
       this.roomUp = ru.hit ? ru.dist : 140;
-      const H = clamp((dS + this.roomUp) * 0.42, CORE_R + 3, RIDE_H);
+      const H = clamp((dS + this.roomUp) * 0.42, CORE_R + 3, this.rideH);
       // Ride spring: hold the core at leg height above the surface (critically damped).
       const vn = this.vx * u.x + this.vy * u.y;
       const acc = rd.hit && dS < REACH * 1.2 ? ((H - dS) * 380 - vn * 38) * grip : 0;
@@ -382,19 +391,27 @@ class Player {
     this.x = c.x; this.y = c.y;
   }
 
-  fire(w) {
+  wkind() { return this.weapons[this.weapon].kind; }
+
+  // Natural (creature) attack; Subject 09 has none.
+  natural() {}
+
+  // Where the rope/tentacle comes out of the body.
+  ropeOrigin() { return this.pts[R.HAND_B]; }
+
+  fire(kind) {
     const g = this.game;
     const m = this.muzzle(), a = this.aim;
-    this.cool = WEAPONS[w].cool;
+    this.cool = this.weapons[this.weapon].cool;
     this.recoil = 1;
-    if (w === 0) {
+    if (kind === 'harpoon') {
       g.spikes.push(new Spike(m.x, m.y, a.x * HARPOON_SPEED, a.y * HARPOON_SPEED));
       this.vx -= a.x * 40;
       g.shake(1);
       g.fx.flash(m.x, m.y, 26);
       g.fx.smoke(m.x, m.y);
       Sfx.harpoon();
-    } else if (w === 2) {
+    } else if (kind === 'shotgun') {
       const base = Math.atan2(a.y, a.x);
       // Devastating point blank, weak past ~12 tiles.
       for (let k = 0; k < 8; k++) {
@@ -407,10 +424,10 @@ class Player {
       g.fx.flash(m.x, m.y, 34, '#ffd27a');
       for (let k = 0; k < 3; k++) g.fx.smoke(m.x, m.y);
       Sfx.shotgun();
-    } else if (w === 3) {
+    } else if (kind === 'saw') {
       g.shots.push(new Saw(m.x, m.y, a.x * 1050, a.y * 1050));
       Sfx.whip(); Sfx.clang();
-    } else if (w === 4) {
+    } else if (kind === 'bile') {
       g.shots.push(new Bomb(m.x, m.y, a.x * 720 + this.vx * 0.3, a.y * 720 - 120 + this.vy * 0.2));
       Sfx.squelch();
     }
@@ -586,27 +603,29 @@ class Player {
     }
   }
 
-  renderGun(fb) {
-    const h = this.pts[R.HAND_F];
+  renderGun(fb, hand) {
+    const h = hand || this.pts[R.HAND_F];
     const a = this.aim;
     const x = h.x / PX, y = h.y / PX;
     const nx = -a.y, ny = a.x;
-    if (this.weapon === 0) {
+    const kind = this.wkind();
+    if (kind === 'bite') return;
+    if (kind === 'harpoon') {
       fb.line(x - a.x * 2, y - a.y * 2, x + a.x * 7, y + a.y * 7, GUN_DARK);
       fb.line(x - a.x * 2 + nx * 0.9, y - a.y * 2 + ny * 0.9, x + a.x * 6 + nx * 0.9, y + a.y * 6 + ny * 0.9, GUN_MID);
       if (this.cool <= 0) fb.put(x + a.x * 8, y + a.y * 8, SPIKE_TIP);
-    } else if (this.weapon === 2) {
+    } else if (kind === 'shotgun') {
       fb.line(x - a.x * 3, y - a.y * 3, x + a.x * 8, y + a.y * 8, GUN_DARK);
       fb.line(x - a.x * 3 + nx * 0.9, y - a.y * 3 + ny * 0.9, x + a.x * 1 + nx * 0.9, y + a.y * 1 + ny * 0.9, STOCK_C);
       fb.line(x + a.x * 2 + nx * 0.9, y + a.y * 2 + ny * 0.9, x + a.x * 7 + nx * 0.9, y + a.y * 7 + ny * 0.9, GUN_MID);
-    } else if (this.weapon === 3) {
+    } else if (kind === 'saw') {
       fb.line(x - a.x * 2, y - a.y * 2, x + a.x * 5, y + a.y * 5, GUN_MID);
       fb.line(x - a.x * 2 + nx, y - a.y * 2 + ny, x + a.x * 5 + nx, y + a.y * 5 + ny, GUN_DARK);
       if (this.cool <= 0) {
         fb.disc(x + a.x * 8, y + a.y * 8, 2.2, SAW_DARK);
         fb.put(x + a.x * 8 + Math.cos(this.t * 30) * 2, y + a.y * 8 + Math.sin(this.t * 30) * 2, SAW_HI);
       }
-    } else if (this.weapon === 4) {
+    } else if (kind === 'bile') {
       fb.line(x - a.x * 2, y - a.y * 2, x + a.x * 6, y + a.y * 6, GUN_DARK);
       fb.disc(x + a.x * 2 - nx, y + a.y * 2 - ny, 1.6, this.cool <= 0 ? BILE_C : BILE_D);
     } else {

@@ -152,7 +152,7 @@ class Tentacle {
     this.t = 0;
   }
 
-  origin() { return this.pl.shoulder(); }
+  origin() { return this.pl.ropeOrigin ? this.pl.ropeOrigin() : this.pl.shoulder(); }
   attached() { return this.state === 'attached'; }
   attachedFixed() { return this.state === 'attached' && (this.anchor || (this.target && this.target.pin)); }
   holding() { return this.state === 'attached' && this.target && !this.target.pin; }
@@ -368,7 +368,7 @@ class Tentacle {
 
   render(fb) {
     if (this.state === 'idle') return;
-    const o = this.pl.pts[R.HAND_B];
+    const o = this.pl.ropeOrigin();
     const tx = this.tip.x, ty = this.tip.y;
     const d = dist(o.x, o.y, tx, ty) || 1;
     const ux = (tx - o.x) / d, uy = (ty - o.y) / d;

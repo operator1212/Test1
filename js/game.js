@@ -2,7 +2,8 @@
 'use strict';
 
 const ART_VIEW_H = 270;
-const KILL_SLOW_TIME = 0.6;      // target vertical resolution in art pixels
+const KILL_SLOW_TIME = 0.6;
+const CREATURES = () => [Player, Worm];      // target vertical resolution in art pixels
 const SOLVER_ITERS = 8;
 
 class Game {
@@ -195,6 +196,7 @@ class Game {
     if (I.hit('KeyK')) { this.player.god = !this.player.god; this.message(this.player.god ? 'GOD MODE ON' : 'GOD MODE OFF'); }
     if (I.hit('KeyO')) { this.shakeOn = !this.shakeOn; this.shakeAmt = 0; this.message(this.shakeOn ? 'SCREEN SHAKE ON' : 'SCREEN SHAKE OFF'); }
     if (I.hit('KeyX')) this.clearSpikes();
+    if (I.hit('Tab')) this.switchCreature();
 
     this.player.update(dt);
     for (const n of this.npcs) n.update(dt);
@@ -245,6 +247,24 @@ class Game {
     old.release();
     old.state = 'dead';
     this.spikes = this.spikes.filter((s) => s !== old);
+  }
+
+  // Swap the escaped test subject in place (keeps health and momentum).
+  switchCreature() {
+    const old = this.player;
+    if (old.dead) return;
+    old.tentacle.release(false);
+    Sfx.laserOn(false);
+    const list = CREATURES();
+    const C = list[(list.indexOf(old.constructor) + 1) % list.length];
+    const p = new C(this, old.x, old.y + old.rideH);
+    p.hp = old.hp; p.god = old.god; p.vx = old.vx; p.vy = old.vy;
+    p.up = { ...old.up };
+    this.player = p;
+    this.fx.flash(p.x, p.y, 60, '#ff9aa0');
+    this.blood.burst(p.x, p.y, 30, 300);
+    this.message(p.creature, '#ffb3b8');
+    Sfx.squelch();
   }
 
   clearSpikes() {
@@ -505,6 +525,7 @@ class Game {
     g.fillStyle = pl.god ? '#ffe36b' : pl.hp > 35 ? '#e8414f' : (Math.floor(this.time * 6) % 2 ? '#ff8a8a' : '#e8414f');
     g.fillRect(7, 41, Math.round(84 * clamp(pl.hp / pl.maxHp, 0, 1)), 4);
     pixelText(g, pl.god ? 'GOD' : String(Math.ceil(pl.hp)), 97, 40, '#ffffff');
+    pixelText(g, pl.creature, 116, 40, '#ffb3b8');
     panel(4, 50, 90, 8);
     g.fillStyle = '#10243a'; g.fillRect(7, 53, 84, 2);
     g.fillStyle = this.timeScale < 1 ? '#ffd84a' : '#7fb8ff';
@@ -512,12 +533,12 @@ class Game {
     pixelText(g, 'FOCUS', 97, 51, this.timeScale < 1 ? '#ffd84a' : '#9fc2ff');
 
     // Weapons.
-    WEAPONS.forEach((wpn, i) => {
+    pl.weapons.forEach((wpn, i) => {
       const x = 4 + i * 47, y = H - 20;
       panel(x, y, 44, 16, pl.weapon === i ? 'rgba(47,95,191,0.92)' : 'rgba(12,20,38,0.78)');
       pixelText(g, (i + 1) + ' ' + wpn.name, x + 3, y + 3, '#ffffff');
       g.fillStyle = 'rgba(255,255,255,0.2)'; g.fillRect(x + 3, y + 11, 38, 2);
-      if (i === 1) {
+      if (wpn.kind === 'laser') {
         g.fillStyle = pl.overheat ? '#ff3b2f' : `hsl(${lerp(190, 10, pl.heat)},100%,60%)`;
         g.fillRect(x + 3, y + 11, Math.round(38 * pl.heat), 2);
       } else {
@@ -525,7 +546,7 @@ class Game {
         g.fillStyle = '#d7dce4'; g.fillRect(x + 3, y + 11, Math.round(38 * r), 2);
       }
     });
-    const ax = 4 + WEAPONS.length * 47;
+    const ax = 4 + pl.weapons.length * 47;
     panel(ax, H - 20, 76, 16);
     const tn = pl.tentacle;
     const ts = tn.state === 'attached' ? (tn.eating ? 'EATING' : tn.holding() ? 'HOLD - E RIP/EAT' : 'LATCHED') : 'RMB TENTACLE';
@@ -548,10 +569,10 @@ class Game {
         ['WASD', 'MOVE ALONG FLOORS, WALLS, CEILINGS'], ['INTO A WALL', 'RUNS UP IT AND OVER THE TOP'],
         ['AWAY', 'PUSH OFF A WALL/CEILING TO LET GO'], ['SPACE', 'LEAP OFF WHATEVER YOU HOLD'],
         ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
-        ['LMB', 'FIRE WEAPON'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
+        ['LMB', 'FIRE WEAPON / BITE (WORM, HOLD)'], ['RMB HOLD', 'SWING ON WALLS, GRAB BODIES'],
         ['SWINGING', 'FLICK MOUSE, A/D PUMP, W/S ROPE'],
         ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION (USES FOCUS)'],
-        ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
+        ['TAB', 'SWITCH CREATURE (SUBJECT 09 / WORM)'], ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],
         ['X / R', 'CLEAR HARPOONS / RESET'], ['H', 'HIDE HELP'],
       ];
       const bw = 192, x = W - bw - 4;
@@ -566,7 +587,7 @@ class Game {
 
     // Crosshair.
     const mx = Math.floor(Input.mouse.x / v.s), my = Math.floor(Input.mouse.y / v.s);
-    const col = pl.weapon === 0 ? '#ffffff' : '#ff5c8a';
+    const col = pl.wkind() === 'laser' ? '#ff5c8a' : '#ffffff';
     for (const [c, o] of [['#000000', 1], [col, 0]]) {
       g.fillStyle = c;
       g.fillRect(mx - 5 + o, my + o, 3, 1); g.fillRect(mx + 3 + o, my + o, 3, 1);

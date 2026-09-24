@@ -27,6 +27,7 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 | Shift | dash (hold WASD to pick a direction). One air dash per jump, usable off walls; it rams NPCs |
 | Mouse | aim |
 | LMB | fire the current weapon |
+| Tab | switch creature (Subject 09 / Worm) |
 | RMB (hold) | tentacle grapple: latch onto a surface and swing like a pendulum. Flick the mouse to throw your momentum, A/D to pump, W/S to climb or let out rope, release to fling. Hitting a body grabs it instead (swing it with the mouse, release to throw) |
 | E / hold E (while holding) | rip the grabbed part off a living NPC, or hold E to pull a loose part or corpse to your mouth and eat it bite by bite to heal |
 | 1-5 / Q / mouse wheel | harpoon / laser / shotgun / saw / bile bomb |
@@ -94,6 +95,22 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
   - **Bodies:** grab any body part and swing it with the mouse to slam or throw it. E rips
     the grabbed part off a living NPC. Hold E on a loose part or corpse to pull it to your
     mouth and chew through it bite by bite, healing as you go.
+- **Creatures** (Tab to switch in place; `js/worm.js`): the premise is a containment breach
+  where several different test subjects escape. They all share the adhesive-core movement,
+  health, eating and the tentacle grapple. Each one adds its own body and a natural attack in
+  weapon slot 1, and the stolen guns come after that.
+  - **Subject 09:** the humanoid mutant, with a procedural body and guns in hand.
+  - **Worm:** a segmented body that follows its head over walls, around corners and through
+    vents, with a hump wave as it crawls.
+    - **Bite:** hold LMB to open the jaws. Pressing lunges forward, and anything in the mouth
+      is chewed away pixel by pixel, which heals you. The fatal zones apply, so a bite to the
+      throat opens an artery.
+    - **Growth:** eating grows the worm a segment every ~120 pixels.
+    - **Guns:** carried clamped in its jaws.
+    - **Grapple:** a tongue.
+  - **Planned:** a floating eye with tendrils that rip chunks out fast, a fly swarm that eats
+    single pixels, a slime that traps and dissolves whatever gets stuck in it, and a crystal
+    creature whose shards grow inside wounds and burst them.
 - **Focus**: slow motion (F) drains a focus meter, which refills slowly and gets topped up
   by kills.
 - **Movement (adhesive core)** (`js/player.js`):
@@ -130,7 +147,8 @@ js/ragdoll.js   pixel body pieces: sprite generation, burning, splitting, bleedi
 js/blood.js     blood droplets, per-pixel decals, and FX (sparks, smoke, text)
 js/npc.js       NPC brains and pose-driven active ragdoll
 js/weapons.js   harpoon spikes, tentacle, laser constants
-js/player.js    the Subject: movement, weapons, pixel puppet
+js/player.js    shared creature core (movement, health, weapons) + Subject 09
+js/worm.js      the Worm creature
 js/game.js      world step, camera, objectives, HUD
 js/main.js      boot and fixed-timestep loop
 ```
