@@ -1,12 +1,23 @@
-// Subject 09: the escaped lab experiment. Platformer body with wall jumps
-// and a dash, a flesh tentacle, and a rack of stolen lab weapons.
+// Subject 09: the escaped lab experiment.
+//
+// Movement is an "adhesive core": the body is a small round core that feels
+// every surface around it and floats at leg height above whatever it's on.
+// Floors, walls, ceilings and vents are all the same thing: input is projected
+// along the surface, pushing into a wall runs you up it and over the top, and
+// tight spaces make you crouch then crawl. Nothing is a canned animation: feet
+// and hands plant on real surface points and step when they drift, knees and
+// elbows are solved with IK, and the body tilts smoothly to the surface.
 'use strict';
 
-const RUN_SPEED = 265;
-const JUMP_V = 650;
+const MOVE_SPEED = 270;
+const AIR_SPEED = 265;
+const JUMP_V = 640;
 const DASH_SPEED = 860;
-const STAND_H = 108, SQUEEZE_H = 44;
-const CLIMB_SPEED = 240, CEIL_SPEED = 210;
+const CORE_R = 15;              // collision radius of the core (≈ pelvis)
+const REACH = 80;               // how far away a surface can be felt/gripped
+const RIDE_H = 46;              // pelvis height above the surface when there's room
+const SENSE_RAYS = 20;
+const LEG_A = 8.6 * PX, LEG_B = 8.5 * PX, ARM_A = 6.7 * PX, ARM_B = 6.1 * PX;
 const WEAPONS = [
   { name: 'HARPOON', cool: 0.42 },
   { name: 'LASER', cool: 0 },
@@ -18,22 +29,34 @@ const WEAPONS = [
 function approach(v, target, amount) {
   return v < target ? Math.min(target, v + amount) : Math.max(target, v - amount);
 }
+function norm(x, y) { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; }
+
+// Two-bone IK: joint position for a limb from (ax,ay) to (bx,by), bending toward (bendX,bendY).
+function ik2(ax, ay, bx, by, l1, l2, bendX, bendY) {
+  let dx = bx - ax, dy = by - ay;
+  let d = Math.hypot(dx, dy) || 1e-3;
+  const maxD = l1 + l2 - 0.01;
+  if (d > maxD) { bx = ax + dx / d * maxD; by = ay + dy / d * maxD; dx = bx - ax; dy = by - ay; d = maxD; }
+  d = Math.max(d, Math.abs(l1 - l2) + 0.01);
+  const a = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
+  const ux = dx / d, uy = dy / d;
+  const px = -uy, py = ux;
+  const sgn = px * bendX + py * bendY >= 0 ? 1 : -1;
+  return { jx: ax + ux * a + px * h * sgn, jy: ay + uy * a + py * h * sgn, ex: bx, ey: by };
+}
 
 class Player {
-  constructor(game, x, y) {
+  constructor(game, x, feetY) {
     this.game = game;
-    this.x = x; this.y = y;          // x = centre, y = feet
+    this.x = x; this.y = feetY - RIDE_H;   // the core, roughly the pelvis
     this.vx = 0; this.vy = 0;
-    this.w = 22; this.h = 108;
-    this.onGround = false;
-    this.coyote = 0; this.jumpBuf = 0; this.jumping = false;
     this.facing = 1;
     this.aim = { x: 1, y: 0 };
     this.weapon = 0;
     this.cool = 0;
     this.heat = 0; this.overheat = false; this.firingLaser = false;
     this.recoil = 0;
-    this.runPhase = 0;
     this.t = 0;
     this.maxHp = 100; this.hp = 100;
     this.god = false; this.dead = false; this.deadT = 0;
@@ -41,16 +64,23 @@ class Player {
     this.dashT = 0; this.dashCool = 0; this.airDashes = 1; this.dashDx = 1; this.dashDy = 0;
     this.rammed = new Set();
     this.trail = [];
-    this.wallDir = 0; this.lastWallDir = 0; this.wallCoyote = 0; this.wallLock = 0;
-    // Movement modes: normal | wall (clinging/climbing) | ceiling (crawling upside down).
-    this.mode = 'normal';
-    this.clingDir = 0; this.climbPhase = 0; this.lastClimbUp = false;
-    this.squeezed = false;           // compressed to crawl through low gaps
     this.biteT = 0;
+    // Adhesion state.
+    this.up = { x: 0, y: -1 };       // smoothed surface normal (away from surface)
+    this.bodyUp = { x: 0, y: -1 };   // smoothed visual body axis
+    this.grip = 0;
+    this.detachT = 0;
+    this.lastGripT = 0;
+    this.roomUp = 200;
+    this.side = 1;                   // which way along the surface we face
+    this.onGround = false;
     this.tentacle = new Tentacle(this);
     this.flip = 1;
-    this.pts = RAG_REST.map(([ox, oy]) => ({ x: x + ox, y: y + oy }));
+    this.pts = RAG_REST.map(([ox, oy]) => ({ x: x + ox, y: feetY + oy }));
+    this.feet = [0, 1].map(() => ({ x: x, y: feetY, fx: x, fy: feetY, tx: x, ty: feetY, t: 1, planted: false }));
+    this.hand = { x: x, y: feetY - 60, fx: 0, fy: 0, tx: 0, ty: 0, t: 1, planted: false };
     this.buildPieces();
+    this.computePose(0);
   }
 
   buildPieces() {
@@ -61,67 +91,14 @@ class Player {
     this.pieces.sort((p, q) => p.z - q.z);
   }
 
-  shoulder() {
-    if (this.mode === 'ceiling') return { x: this.x + this.facing * 6 * PX, y: this.y - this.h + 5 * PX };
-    if (this.squeezed) return { x: this.x + this.facing * 6 * PX, y: this.y - 5 * PX };
-    return { x: this.x, y: this.y + RAG_REST[R.NECK][1] };
-  }
+  get cx() { return (this.pts[R.PELVIS].x + this.pts[R.NECK].x) / 2; }
+  get cy() { return (this.pts[R.PELVIS].y + this.pts[R.NECK].y) / 2; }
+
+  shoulder() { const n = this.pts[R.NECK]; return { x: n.x, y: n.y }; }
 
   mouth() {
-    const h = this.pts[R.HEAD];
-    return { x: h.x + this.facing * 2 * PX, y: h.y + 2 * PX };
-  }
-
-  fits(x, y, h) {
-    return !this.game.map.boxSolid(x - this.w / 2, y - h, x + this.w / 2, y);
-  }
-
-  setSqueezed(on) {
-    if (on === this.squeezed) return true;
-    if (!on && !this.fits(this.x, this.y, STAND_H)) return false;
-    this.squeezed = on;
-    this.h = on ? SQUEEZE_H : STAND_H;
-    return true;
-  }
-
-  // Wall probe: +1 / -1 when a wall covers most of the body's side, else 0.
-  // (A short lip, like the edge of a vent opening, doesn't count.)
-  probeWall() {
-    const [l, t, r, b] = this.box();
-    const m = this.game.map;
-    const pad = Math.min(12, this.h * 0.2);
-    const ys = [t + pad, (t + b) / 2, b - pad];
-    const side = (x) => ys.filter((y) => m.solidPx(x, y)).length >= 2;
-    return side(r + 1) ? 1 : side(l - 1) ? -1 : 0;
-  }
-
-  // Height of the top of the wall beside us (world y), scanning up from the feet.
-  wallTop(dir) {
-    const m = this.game.map;
-    const x = dir > 0 ? this.x + this.w / 2 + 1 : this.x - this.w / 2 - 1;
-    let ty = Math.floor((this.y - 1) / TILE);
-    if (!m.solidPx(x, this.y - 1)) return this.y;
-    while (ty > 0 && m.solid(Math.floor(x / TILE), ty - 1)) ty--;
-    return ty * TILE;
-  }
-
-  setMode(mode) {
-    if (mode === this.mode) return;
-    if (this.mode === 'ceiling') {
-      // Unfold downward from the ceiling if there's room.
-      this.mode = 'normal';
-      if (this.fits(this.x, this.y + (STAND_H - SQUEEZE_H), STAND_H)) { this.y += STAND_H - SQUEEZE_H; this.setSqueezed(false); }
-    }
-    this.mode = mode;
-    if (mode === 'ceiling') {
-      this.setSqueezed(true);
-      // Snap flat against the ceiling.
-      const top = Math.round((this.y - STAND_H) / TILE) * TILE;
-      const y = top + SQUEEZE_H + 0.01;
-      if (this.fits(this.x, y, SQUEEZE_H)) this.y = y;
-      this.vy = 0;
-    }
-    if (mode === 'wall') { this.clingDir = this.wallDir; this.vx = 0; this.vy = 0; Sfx.latch(); }
+    const h = this.pts[R.HEAD], t = { x: -this.bodyUp.y, y: this.bodyUp.x };
+    return { x: h.x + t.x * this.side * 2 * PX, y: h.y + t.y * this.side * 2 * PX };
   }
 
   muzzle() {
@@ -132,58 +109,47 @@ class Player {
     return { x: s.x + this.aim.x * len, y: s.y + this.aim.y * len };
   }
 
-  box() { return [this.x - this.w / 2, this.y - this.h, this.x + this.w / 2, this.y]; }
+  box() {
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const p of this.pts) { l = Math.min(l, p.x); r = Math.max(r, p.x); t = Math.min(t, p.y); b = Math.max(b, p.y); }
+    return [l - 8, t - 14, r + 8, b + 4];
+  }
 
+  // Pixel-precise: is there a body pixel of ours at (x, y)?
   hitTest(x, y) {
-    if (this.dead) return false;
-    const [l, t, r, b] = this.box();
-    return x > l && x < r && y > t + 6 && y < b;
+    if (this.dead || dist(x, y, this.cx, this.cy) > 80) return false;
+    for (const q of this.pieces) if (q.cellAt(x, y) >= 0) return true;
+    return false;
   }
 
-  moveX(dx) {
-    if (!dx) return false;
-    const ox = this.x;
-    this.x += dx;
-    const [l, t, r, b] = this.box();
-    if (!this.game.map.boxSolid(l, t, r, b)) return false;
-    if (this.mode === 'normal' && (this.onGround || this.grounded) && this.dashT <= 0) {
-      // Too low to stand: squeeze through.
-      if (!this.squeezed && this.fits(this.x, this.y, SQUEEZE_H)) { this.setSqueezed(true); return false; }
-      // Step up small ledges, vault anything up to ~2 tiles.
-      for (let step = 6; step <= 72; step += 6) {
-        if (!this.fits(this.x, this.y - step, this.h) || !this.fits(ox, this.y - step, this.h)) continue;
-        if (step <= 18) { this.y -= step; return false; }
-        this.x = ox;
-        this.vy = -Math.sqrt(2 * GRAVITY * (step + 10));
-        this.grounded = false; this.onGround = false;
-        this.vaultT = 0.35;           // don't grab the thing we're vaulting
-        return false;
-      }
-    }
-    if (dx > 0) this.x = Math.floor(r / TILE) * TILE - this.w / 2 - 0.001;
-    else this.x = (Math.floor(l / TILE) + 1) * TILE + this.w / 2 + 0.001;
-    return true;
-  }
-
-  moveY(dy) {
-    if (!dy) return false;
-    this.y += dy;
-    const [l, t, r, b] = this.box();
-    if (!this.game.map.boxSolid(l, t, r, b)) return false;
-    if (dy > 0) this.y = Math.floor(b / TILE) * TILE - 0.001;
-    else this.y = (Math.floor(t / TILE) + 1) * TILE + this.h + 0.001;
-    return true;
-  }
-
+  // Move the core with circle-vs-tile collision (used by the tentacle rope).
   moveBy(dx, dy) {
-    const n = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 8));
+    const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 6));
+    const c = { x: this.x, y: this.y, r: CORE_R };
     for (let i = 0; i < n; i++) {
-      if (this.moveX(dx / n)) this.vx = 0;
-      if (this.moveY(dy / n)) { if (dy > 0) this.onGround = true; this.vy = 0; }
+      c.x += dx / n; c.y += dy / n;
+      const nrm = this.game.map.pushCircle(c);
+      if (nrm) { const vn = this.vx * nrm.x + this.vy * nrm.y; if (vn < 0) { this.vx -= nrm.x * vn; this.vy -= nrm.y * vn; } }
     }
+    this.x = c.x; this.y = c.y;
   }
 
-  // ------------------------------------------------------------ health
+  // Feel for surfaces all around the core.
+  sense() {
+    const m = this.game.map;
+    let nx = 0, ny = 0, w = 0;
+    for (let i = 0; i < SENSE_RAYS; i++) {
+      const a = (i + 0.5) / SENSE_RAYS * TAU;
+      const dx = Math.cos(a), dy = Math.sin(a);
+      const r = m.raycast(this.x, this.y, dx, dy, REACH);
+      if (!r.hit) continue;
+      const k = 1 - r.dist / REACH;
+      nx -= dx * k * k; ny -= dy * k * k; w += k * k;
+    }
+    const l = Math.hypot(nx, ny);
+    return { n: l > 0.05 ? { x: nx / l, y: ny / l } : null, w };
+  }
+
   hurt(dmg, dx, dy, x, y) {
     if (this.dead || this.god || this.dashT > 0 || dmg <= 0) return;
     this.hp -= dmg;
@@ -220,16 +186,17 @@ class Player {
         g.blood.spawn(x, y, rand(-420, 420), rand(-620, 50), 2.5, q.col[idx]);
       }
     }
-    g.blood.burst(this.x, this.y - 55, 80, 500);
+    g.blood.burst(this.cx, this.cy, 80, 500);
     Sfx.rip();
     g.message('SUBJECT 09 NEUTRALISED', '#ff5a64');
   }
 
   respawn() {
     const s = this.game.spawn;
-    this.x = s.x; this.y = s.y; this.vx = this.vy = 0;
+    this.x = s.x; this.y = s.y - RIDE_H; this.vx = this.vy = 0;
     this.hp = this.maxHp; this.dead = false;
-    this.mode = 'normal'; this.squeezed = false; this.h = STAND_H;
+    this.up = { x: 0, y: -1 }; this.bodyUp = { x: 0, y: -1 };
+    for (const f of this.feet) f.planted = false;
     this.buildPieces();
   }
 
@@ -257,142 +224,7 @@ class Player {
     if (Input.hit('KeyQ')) this.weapon = (this.weapon + 1) % WEAPONS.length;
     if (Input.wheel) this.weapon = (this.weapon + (Input.wheel > 0 ? 1 : WEAPONS.length - 1)) % WEAPONS.length;
 
-    const left = Input.down('KeyA') || Input.down('ArrowLeft');
-    const right = Input.down('KeyD') || Input.down('ArrowRight');
-    const up = Input.down('KeyW') || Input.down('ArrowUp');
-    const down = Input.down('KeyS') || Input.down('ArrowDown');
-    const ax = (right ? 1 : 0) - (left ? 1 : 0);
-    const roped = this.tentacle.attachedFixed();
-
-    // ------------------------------------------------------------ movement
-    const map = g.map;
-    this.dashCool -= dt;
-    this.wallLock -= dt;
-    this.vaultT = (this.vaultT || 0) - dt;
-    this.wallDir = this.probeWall();
-    const ceilAbove = () => { const [l, t, r] = this.box(); return map.boxSolid(l + 2, t - 3, r - 2, t); };
-    const jumpHit = Input.hit('Space');
-    const upHit = Input.hit('KeyW') || Input.hit('ArrowUp');
-
-    // Dash (Shift): short burst in the held direction, once per airtime. Works off walls too.
-    if ((Input.hit('ShiftLeft') || Input.hit('ShiftRight')) && this.dashCool <= 0 && (this.onGround || this.airDashes > 0 || this.mode !== 'normal')) {
-      let dx = ax, dy = (down ? 1 : 0) - (up ? 1 : 0);
-      if (!dx && !dy) dx = this.mode === 'wall' ? -this.clingDir : this.facing;
-      const l = Math.hypot(dx, dy);
-      this.dashDx = dx / l; this.dashDy = dy / l;
-      this.dashT = 0.16; this.dashCool = 0.5;
-      if (!this.onGround && this.mode === 'normal') this.airDashes--;
-      this.setMode('normal');
-      this.rammed.clear();
-      Sfx.dash();
-    }
-
-    // Grab walls and ceilings while airborne.
-    if (this.mode === 'normal' && !this.onGround && this.dashT <= 0 && this.wallLock <= 0 && this.vaultT <= 0 && !roped) {
-      if (this.wallDir && (ax === this.wallDir || up)) this.setMode('wall');
-      else if (up && ceilAbove()) this.setMode('ceiling');
-    }
-    // Hug the floor to squeeze (S), stand back up when there's room.
-    if (this.mode === 'normal') {
-      if (down && this.onGround) this.setSqueezed(true);
-      else if (this.squeezed && !down) this.setSqueezed(false);
-    }
-
-    if (this.dashT > 0) {
-      this.dashT -= dt;
-      this.vx = this.dashDx * DASH_SPEED; this.vy = this.dashDy * DASH_SPEED;
-      this.trail.push({ x: this.x, y: this.y, t: 0.22 });
-      if (this.dashT <= 0) { this.vx *= 0.55; this.vy *= 0.35; }
-    } else if (this.mode === 'wall') {
-      // Cling: W/S climb, stick in place otherwise; pull away to let go.
-      const vin = (down ? 1 : 0) - (up ? 1 : 0);
-      this.vy = vin * CLIMB_SPEED;
-      this.vx = this.clingDir * 60;
-      this.lastClimbUp = vin < 0;
-      this.climbPhase += Math.abs(this.vy) * dt * 0.06;
-      this.airDashes = 1;
-      this.facing = this.clingDir;
-      if (up && ceilAbove()) this.setMode('ceiling');
-      else if (ax === -this.clingDir) { this.setMode('normal'); this.vx = -this.clingDir * 160; this.wallLock = 0.12; }
-      else if (jumpHit) {
-        this.setMode('normal');
-        this.vy = -600; this.vx = -this.clingDir * 400; this.wallLock = 0.18; this.jumping = true;
-        Sfx.whip();
-      }
-    } else if (this.mode === 'ceiling') {
-      this.vx = ax * CEIL_SPEED;
-      this.vy = -60;
-      this.climbPhase += Math.abs(this.vx) * dt * 0.06;
-      this.airDashes = 1;
-      if (ax) this.facing = ax;
-      if (down || jumpHit) { this.setMode('normal'); this.vy = 60; }
-    } else {
-      const speed = this.squeezed && this.onGround ? RUN_SPEED * 0.65 : RUN_SPEED;
-      if (this.onGround) this.vx = approach(this.vx, ax * speed, (ax ? 2800 : 3000) * dt);
-      else if (roped) this.vx += ax * 750 * dt;
-      else if (this.wallLock > 0) { /* brief lockout after a wall jump */ }
-      else if (ax !== 0) { if (ax * this.vx < RUN_SPEED) this.vx = approach(this.vx, ax * RUN_SPEED, 1800 * dt); }
-      else this.vx *= Math.max(0, 1 - 1.5 * dt);
-      this.vy = Math.min(this.vy + GRAVITY * dt, 1200);
-    }
-    for (const tr of this.trail) tr.t -= dt;
-    this.trail = this.trail.filter((tr) => tr.t > 0);
-
-    if (this.mode === 'normal' && !this.onGround && this.wallDir) { this.wallCoyote = 0.12; this.lastWallDir = this.wallDir; }
-    else this.wallCoyote -= dt;
-
-    // Jumping: Space anywhere; W also jumps from the ground (in the air W grabs/climbs).
-    const jumpHeld = Input.down('Space') || up;
-    if (jumpHit || (upHit && (this.onGround || this.coyote > 0))) this.jumpBuf = 0.12;
-    else this.jumpBuf -= dt;
-    this.coyote = this.onGround ? 0.1 : this.coyote - dt;
-    if (this.jumpBuf > 0 && this.mode === 'normal') {
-      if (roped) {
-        this.tentacle.release(false);
-        this.vy = Math.min(this.vy, -560); this.vx += ax * 150;
-        this.jumpBuf = 0;
-      } else if (this.coyote > 0 && (!this.squeezed || this.setSqueezed(false))) {
-        this.vy = -JUMP_V; this.coyote = 0; this.jumpBuf = 0; this.jumping = true;
-      } else if (this.wallCoyote > 0) {
-        this.vy = -600; this.vx = -this.lastWallDir * 400;
-        this.wallLock = 0.16; this.wallCoyote = 0; this.jumpBuf = 0; this.jumping = true;
-        Sfx.whip();
-      }
-    }
-    if (this.jumping && this.vy < 0 && !jumpHeld) { this.vy *= 0.5; this.jumping = false; }
-    if (this.vy >= 0) this.jumping = false;
-
-    // Integrate with tile collisions.
-    this.grounded = this.onGround;
-    this.onGround = false;
-    const n = Math.max(1, Math.ceil(Math.max(Math.abs(this.vx), Math.abs(this.vy)) * dt / 8));
-    for (let i = 0; i < n; i++) {
-      if (this.moveX(this.vx * dt / n)) { if (this.mode === 'normal') this.vx = 0; }
-      if (this.moveY(this.vy * dt / n)) { if (this.vy > 0) this.onGround = true; if (this.mode !== 'ceiling') this.vy = 0; }
-    }
-    if (!this.onGround && this.vy >= 0) {
-      const [l, , r, b] = this.box();
-      if (map.boxSolid(l, b, r, b + 1.5)) this.onGround = true;
-    }
-    if (this.onGround) this.airDashes = 1;
-
-    // Leave wall/ceiling modes when the surface runs out; top out over ledges.
-    if (this.mode === 'wall') {
-      this.wallDir = this.probeWall();
-      if (this.onGround && !this.lastClimbUp) this.setMode('normal');
-      else if (!this.wallDir) {
-        const dir = this.clingDir;
-        this.setMode('normal');
-        if (this.lastClimbUp) {
-          // Pop up exactly high enough to clear the ledge.
-          const rise = Math.max(24, this.y - this.wallTop(dir) + 26);
-          this.vy = -Math.sqrt(2 * GRAVITY * rise); this.vx = dir * 260; this.wallLock = 0.22;
-        }
-      }
-    } else if (this.mode === 'ceiling' && !ceilAbove()) {
-      this.setMode('normal');
-    }
-    if (this.onGround) this.airDashes = 1;
+    this.move(dt);
 
     // Tentacle.
     if (Input.mouse.pressed[2]) this.tentacle.fire(this.aim.x, this.aim.y);
@@ -421,9 +253,125 @@ class Player {
     if (this.overheat && this.heat < 0.3) this.overheat = false;
     Sfx.laserOn(this.firingLaser);
 
-    if (this.onGround && Math.abs(this.vx) > 20) this.runPhase += Math.abs(this.vx) * dt * 0.05;
+    this.computePose(dt);
+    if (this.y > g.map.ph + 300) { this.respawn(); }
+  }
 
-    if (this.y > g.map.ph + 300) { this.x = g.spawn.x; this.y = g.spawn.y; this.vx = this.vy = 0; }
+  move(dt) {
+    const map = this.game.map;
+    const left = Input.down('KeyA') || Input.down('ArrowLeft');
+    const right = Input.down('KeyD') || Input.down('ArrowRight');
+    const upK = Input.down('KeyW') || Input.down('ArrowUp');
+    const downK = Input.down('KeyS') || Input.down('ArrowDown');
+    const ix = (right ? 1 : 0) - (left ? 1 : 0), iy = (downK ? 1 : 0) - (upK ? 1 : 0);
+    const il = Math.hypot(ix, iy);
+    const I = il ? { x: ix / il, y: iy / il } : { x: 0, y: 0 };
+    const roped = this.tentacle.attachedFixed();
+
+    this.detachT -= dt;
+    this.dashCool -= dt;
+    const sen = this.sense();
+    let grip = sen.n ? clamp(sen.w * 2.6, 0, 1) : 0;
+    if (this.detachT > 0 || this.dashT > 0) grip = 0;
+    if (roped) grip = Math.min(grip, 0.15);
+    // Push away from a wall/ceiling to let go of it.
+    if (grip > 0 && il && sen.n.y > -0.7 && I.x * sen.n.x + I.y * sen.n.y > 0.6) { grip = 0; this.detachT = 0.15; }
+
+    // Smoothly track the surface normal.
+    const target = grip > 0.2 ? sen.n : { x: 0, y: -1 };
+    let k = 1 - Math.exp(-dt * (grip > 0.2 ? 14 : 5));
+    if (this.up.x * target.x + this.up.y * target.y < -0.2) k = 1;   // surface flipped (e.g. grabbed a ceiling)
+    this.up = norm(lerp(this.up.x, target.x, k), lerp(this.up.y, target.y, k));
+    this.grip = grip;
+    if (grip > 0.3) { this.lastGripT = this.t; this.airDashes = 1; }
+    const u = this.up, t = { x: -u.y, y: u.x };
+    this.onGround = grip > 0.3 && u.y < -0.6;
+
+    // Dash (Shift): burst in the held direction (or away from the surface / facing).
+    if ((Input.hit('ShiftLeft') || Input.hit('ShiftRight')) && this.dashCool <= 0 && (grip > 0.3 || this.airDashes > 0)) {
+      const d = il ? I : grip > 0.3 && u.y > -0.6 ? u : { x: this.facing, y: 0 };
+      this.dashDx = d.x; this.dashDy = d.y;
+      this.dashT = 0.16; this.dashCool = 0.5; this.detachT = 0.22;
+      if (grip <= 0.3) this.airDashes--;
+      this.rammed.clear();
+      Sfx.dash();
+    }
+
+    if (this.dashT > 0) {
+      this.dashT -= dt;
+      this.vx = this.dashDx * DASH_SPEED; this.vy = this.dashDy * DASH_SPEED;
+      this.trail.push({ x: this.x, y: this.y, t: 0.22 });
+      if (this.dashT <= 0) { this.vx *= 0.55; this.vy *= 0.4; }
+    } else {
+      // Distance to the surface below us and to whatever is above.
+      const rd = map.raycast(this.x, this.y, -u.x, -u.y, REACH * 1.6);
+      const dS = rd.hit ? rd.dist : REACH * 1.6;
+      const ru = map.raycast(this.x, this.y, u.x, u.y, 140);
+      this.roomUp = ru.hit ? ru.dist : 140;
+      const H = clamp((dS + this.roomUp) * 0.42, CORE_R + 3, RIDE_H);
+      // Ride spring: hold the core at leg height above the surface (critically damped).
+      const vn = this.vx * u.x + this.vy * u.y;
+      const acc = rd.hit && dS < REACH * 1.2 ? ((H - dS) * 380 - vn * 38) * grip : 0;
+      this.vx += u.x * acc * dt; this.vy += u.y * acc * dt;
+      // Gravity only for the part we're not holding on with.
+      this.vy += GRAVITY * (1 - grip) * dt;
+      this.vy = Math.min(this.vy, 1200);
+
+      if (grip > 0.05) {
+        // Move along the surface.
+        let dir = 0;
+        if (il) {
+          const along = I.x * t.x + I.y * t.y;
+          const into = I.x * u.x + I.y * u.y;
+          if (Math.abs(along) > 0.25) dir = sign(along);
+          else if (into < -0.5 && u.y > -0.7) {
+            // Pushing straight into a wall or ceiling: run up it / along it.
+            dir = Math.abs(t.y) > 0.2 ? sign(-t.y) : sign(t.x * this.facing) || 1;
+          }
+        }
+        const vt = this.vx * t.x + this.vy * t.y;
+        const nvt = approach(vt, dir * MOVE_SPEED, (dir ? 3000 : 2400) * dt * grip);
+        this.vx += t.x * (nvt - vt); this.vy += t.y * (nvt - vt);
+      }
+      if (grip < 1) {
+        // Air control for the rest.
+        const ax = ix, air = 1 - grip;
+        if (roped) this.vx += ax * 750 * dt;
+        else if (ax && ax * this.vx < AIR_SPEED) this.vx = approach(this.vx, ax * AIR_SPEED, 1500 * dt * air);
+      }
+    }
+
+    // Jump: off whatever we're holding, along its normal. W also jumps off floors.
+    const coyote = this.t - this.lastGripT < 0.12;
+    const jump = Input.hit('Space') || ((Input.hit('KeyW') || Input.hit('ArrowUp')) && this.onGround);
+    if (jump && roped) {
+      this.tentacle.release(false);
+      this.vy = Math.min(this.vy, -560); this.vx += ix * 150;
+      this.detachT = 0.2;
+    } else if (jump && (grip > 0.2 || coyote)) {
+      const n = grip > 0.2 ? u : this.up;
+      const vn = this.vx * n.x + this.vy * n.y;
+      if (vn < 0) { this.vx -= n.x * vn; this.vy -= n.y * vn; }
+      const lift = n.y > -0.6 ? 0.55 : 0;          // off walls/ceilings, add some upward kick
+      this.vx += n.x * JUMP_V + ix * 140;
+      this.vy += n.y * JUMP_V - lift * JUMP_V * 0.8;
+      this.detachT = 0.2;
+      this.lastGripT = -1;
+      if (n.y > -0.6) Sfx.whip();
+    }
+
+    for (const tr of this.trail) tr.t -= dt;
+    this.trail = this.trail.filter((tr) => tr.t > 0);
+
+    // Integrate with circle collision.
+    const steps = Math.max(1, Math.ceil(Math.hypot(this.vx, this.vy) * dt / 6));
+    const c = { x: this.x, y: this.y, r: CORE_R };
+    for (let i = 0; i < steps; i++) {
+      c.x += this.vx * dt / steps; c.y += this.vy * dt / steps;
+      const n = map.pushCircle(c);
+      if (n) { const vn = this.vx * n.x + this.vy * n.y; if (vn < 0) { this.vx -= n.x * vn; this.vy -= n.y * vn; } }
+    }
+    this.x = c.x; this.y = c.y;
   }
 
   fire(w) {
@@ -446,7 +394,7 @@ class Player {
         g.shots.push(new Bullet(m.x, m.y, Math.cos(ang) * sp, Math.sin(ang) * sp, 'player', 14, 'shotgun', null, 380));
       }
       // Big kick: aim down and fire to boost a jump.
-      this.vx -= a.x * 360; this.vy -= a.y * 420;
+      this.vx -= a.x * 360; this.vy -= a.y * 420; this.detachT = 0.15;
       g.shake(2);
       g.fx.flash(m.x, m.y, 34, '#ffd27a');
       for (let k = 0; k < 3; k++) g.fx.smoke(m.x, m.y);
@@ -463,114 +411,153 @@ class Player {
   // Box vs loose ragdoll particles: the player shoves bodies around.
   pushBodies(npcs) {
     if (this.dead) return;
-    const [l, t, r, b] = this.box();
+    const P = this.pts[R.PELVIS], H = this.pts[R.HEAD];
     for (const npc of npcs) for (const p of npc.rag.parts) {
       if (p.pin || p.held) continue;
-      const cx = clamp(p.x, l, r), cy = clamp(p.y, t, b);
-      const dx = p.x - cx, dy = p.y - cy;
-      const d2 = dx * dx + dy * dy;
-      if (d2 >= p.r * p.r) continue;
-      if (d2 > 1e-6) {
-        const d = Math.sqrt(d2);
-        p.x += dx / d * (p.r - d) * 0.5; p.y += dy / d * (p.r - d) * 0.5;
-      } else {
-        p.x += (p.x < this.x ? -1 : 1) * 2;
-      }
-      p.x += this.vx * DT * 0.3;
+      const c = closestOnSeg(p.x, p.y, P.x, P.y, H.x, H.y);
+      const r = 13 + p.r;
+      if (c.d2 >= r * r) continue;
+      const d = Math.sqrt(c.d2) || 1;
+      const push = (r - d) * 0.5;
+      p.x += (p.x - c.x) / d * push; p.y += (p.y - c.y) / d * push;
+      p.x += this.vx * DT * 0.3; p.y += this.vy * DT * 0.3;
     }
   }
 
-  // ------------------------------------------------------------ rendering
-  // Pose the sprite puppet (art pixels, facing right, then mirrored).
-  computePose() {
-    const f = this.facing;
-    this.flip = this.mode === 'ceiling' ? -f : f;
-    const P = REST_ART.map((o) => [o[0], o[1]]);
-    const t = this.t;
-    const running = this.onGround && Math.abs(this.vx) > 20 && !this.squeezed;
-    const flat = this.squeezed || this.mode === 'ceiling';
-    if (flat) {
-      // Low crawl (floor) or upside-down crawl (ceiling): limbs paddle as we move.
-      const ph = this.mode === 'ceiling' ? this.climbPhase : this.runPhase;
-      const s = Math.sin(ph), c = Math.cos(ph);
-      P[R.PELVIS] = [-6, -4.5]; P[R.NECK] = [6, -6]; P[R.HEAD] = [11, -8.5];
-      P[R.ELBOW_B] = [9 - s * 1.5, -3]; P[R.HAND_B] = [12 - s * 3, -0.5 - Math.max(0, -c) * 2];
-      P[R.KNEE_F] = [-9 + s * 2, -2]; P[R.FOOT_F] = [-15 + s * 2, -0.5 - Math.max(0, c) * 1.5];
-      P[R.KNEE_B] = [-9 - s * 2, -2]; P[R.FOOT_B] = [-15 - s * 2, -0.5 - Math.max(0, -c) * 1.5];
-    } else if (this.mode === 'wall') {
-      // Climbing: body flat to the wall, hands and feet alternate.
-      const s = Math.sin(this.climbPhase);
-      P[R.PELVIS] = [0.5, -19]; P[R.NECK] = [1.5, -31]; P[R.HEAD] = [2.5, -37];
-      P[R.ELBOW_B] = [4, -34 + s * 2]; P[R.HAND_B] = [5, -40 + s * 3];
-      P[R.KNEE_F] = [4.5, -12 - s * 2]; P[R.FOOT_F] = [4.5, -5 - s * 2.5];
-      P[R.KNEE_B] = [4, -10 + s * 2]; P[R.FOOT_B] = [4, -2 + s * 2.5];
-    } else if (running) {
-      const ph = this.runPhase;
-      for (const [k, ft, p] of [[R.KNEE_F, R.FOOT_F, ph], [R.KNEE_B, R.FOOT_B, ph + Math.PI]]) {
-        const fx = Math.sin(p) * 5 * sign(this.vx) * f, lift = Math.max(0, Math.cos(p)) * 3.5;
-        P[ft] = [fx, -2 - lift];
-        P[k] = [fx * 0.5 + 2, -10.5 - lift * 0.6];
-      }
-      P[R.PELVIS][1] -= Math.abs(Math.cos(ph)) * 0.8;
-      P[R.NECK][0] += 1.5; P[R.HEAD][0] += 2.2;
-    } else if (!this.onGround) {
-      if (this.tentacle.attachedFixed()) {
-        P[R.KNEE_F] = [1.5, -10]; P[R.FOOT_F] = [0.5, -1.5]; P[R.KNEE_B] = [-1, -10.5]; P[R.FOOT_B] = [-2, -2];
+  // ------------------------------------------------------------ procedural body
+  // Step a planted limb end toward (tx, ty) with a little arc along `up`.
+  stepLimb(L, tx, ty, grounded, reach, other, dt, speed) {
+    if (!grounded) {
+      L.planted = false; L.t = 1;
+      const k = 1 - Math.exp(-dt * 18);
+      L.x = lerp(L.x, tx, k); L.y = lerp(L.y, ty, k);
+      return;
+    }
+    if (!L.planted) { L.planted = true; L.t = 1; L.x = tx; L.y = ty; return; }
+    if (L.t >= 1 && dist(L.x, L.y, tx, ty) > reach && (!other || other.t >= 1)) {
+      L.fx = L.x; L.fy = L.y; L.tx = tx; L.ty = ty; L.t = 0;
+    }
+    if (L.t < 1) {
+      // Keep re-aiming the step at the moving target.
+      L.tx = lerp(L.tx, tx, 0.3); L.ty = lerp(L.ty, ty, 0.3);
+      L.t = Math.min(1, L.t + dt * speed);
+      const e = L.t * L.t * (3 - 2 * L.t);
+      const lift = Math.sin(Math.PI * L.t) * 3 * PX;
+      L.x = lerp(L.fx, L.tx, e) + this.up.x * lift;
+      L.y = lerp(L.fy, L.ty, e) + this.up.y * lift;
+    }
+  }
+
+  computePose(dt) {
+    const map = this.game.map;
+    const grounded = this.grip > 0.25 && this.dashT <= 0;
+    const u = grounded ? this.up : { x: 0, y: -1 };
+    const t = { x: -u.y, y: u.x };
+    // Which way along the surface we face: movement first, else aim.
+    const velT = this.vx * t.x + this.vy * t.y;
+    const aimT = this.aim.x * t.x + this.aim.y * t.y;
+    if (Math.abs(velT) > 60) this.side = sign(velT);
+    else if (Math.abs(aimT) > 0.3) this.side = sign(aimT);
+    const s = this.side;
+    const fx = t.x * s, fy = t.y * s;           // forward along the surface
+    this.flip = s;
+
+    // Body axis: surface up; lean forward into a crawl when there's no headroom;
+    // tilt with velocity in the air.
+    let B = u;
+    const need = 25 * PX;
+    if (grounded && this.roomUp - 4 < need) {
+      const th = Math.acos(clamp((this.roomUp - 4) / need, 0.05, 1));
+      B = norm(u.x * Math.cos(th) + fx * Math.sin(th), u.y * Math.cos(th) + fy * Math.sin(th));
+    } else if (!grounded) {
+      B = norm(this.vx * 0.0005, -1);
+    }
+    const kb = dt ? 1 - Math.exp(-dt * 12) : 1;
+    this.bodyUp = norm(lerp(this.bodyUp.x, B.x, kb), lerp(this.bodyUp.y, B.y, kb));
+    const b = this.bodyUp;
+    const bt = { x: -b.y * s, y: b.x * s };     // body forward
+
+    const P = this.pts;
+    const pel = P[R.PELVIS], neck = P[R.NECK], head = P[R.HEAD];
+    pel.x = this.x; pel.y = this.y;
+    const bob = grounded ? Math.abs(Math.sin(this.t * 9)) * Math.min(1, Math.abs(velT) / 250) * 0.8 * PX : 0;
+    neck.x = pel.x + b.x * (12 * PX + bob); neck.y = pel.y + b.y * (12 * PX + bob);
+    const lunge = this.biteT > 0 ? 2 * PX : 0;
+    head.x = neck.x + b.x * 6 * PX + bt.x * lunge; head.y = neck.y + b.y * 6 * PX + bt.y * lunge;
+
+    // Legs: plant on the real surface under each hip, step when they drift.
+    const legLen = LEG_A + LEG_B;
+    const speed = Math.abs(velT);
+    const stepSpeed = 7 + speed / 40;
+    const lead = clamp(velT * 0.06, -10, 10);
+    for (let k = 0; k < 2; k++) {
+      const L = this.feet[k];
+      const off = (k === 0 ? 2 : -2) * PX + lead * s * (grounded ? 1 : 0);
+      const ox = pel.x + fx * off, oy = pel.y + fy * off;
+      let tx, ty;
+      if (grounded) {
+        const r = map.raycast(ox, oy, -u.x, -u.y, legLen * 1.25);
+        if (r.hit) { tx = r.x + u.x; ty = r.y + u.y; }
+        else { tx = ox - u.x * legLen * 0.9; ty = oy - u.y * legLen * 0.9; }
       } else {
-        P[R.KNEE_F] = [4, -13]; P[R.FOOT_F] = [1, -6]; P[R.KNEE_B] = [2, -12]; P[R.FOOT_B] = [-2.5, -5];
+        // Tuck in the air.
+        const tuck = this.vy < 0 ? 0.6 : 0.85;
+        tx = pel.x - b.x * legLen * tuck + bt.x * (k === 0 ? 3 : -2) * PX;
+        ty = pel.y - b.y * legLen * tuck + bt.y * (k === 0 ? 3 : -2) * PX;
       }
-    } else {
-      P[R.NECK][1] += Math.sin(t * 2.2) * 0.3;
-      P[R.HEAD][1] += Math.sin(t * 2.2 - 0.4) * 0.4;
+      this.stepLimb(L, tx, ty, grounded, 5.5 * PX, this.feet[1 - k], dt, stepSpeed);
+      const knee = ik2(pel.x, pel.y, L.x, L.y, LEG_A, LEG_B, bt.x, bt.y);
+      const [kr, fr] = k === 0 ? [R.KNEE_F, R.FOOT_F] : [R.KNEE_B, R.FOOT_B];
+      P[kr].x = knee.jx; P[kr].y = knee.jy; P[fr].x = knee.ex; P[fr].y = knee.ey;
     }
-    if (this.biteT > 0) { P[R.HEAD][0] += 2; P[R.HEAD][1] += 1; P[R.NECK][0] += 1; }
-    const pts = this.pts;
-    const top = this.y - this.h;
-    for (let i = 0; i < pts.length; i++) {
-      pts[i].x = this.x + P[i][0] * PX * f;
-      pts[i].y = this.mode === 'ceiling' ? top - P[i][1] * PX : this.y + P[i][1] * PX;
-    }
+
     // Front arm aims the gun.
-    const N = pts[R.NECK];
     const a = this.aim, rc = this.recoil * 2 * PX;
-    pts[R.ELBOW_F].x = N.x + a.x * 5.5 * PX; pts[R.ELBOW_F].y = N.y + a.y * 5.5 * PX + PX;
-    pts[R.HAND_F].x = N.x + a.x * (11 * PX - rc); pts[R.HAND_F].y = N.y + a.y * (11 * PX - rc);
-    // Back arm reaches toward whatever the tentacle is doing.
-    const tn = this.tentacle;
+    const ha = ik2(neck.x, neck.y, neck.x + a.x * (11 * PX - rc), neck.y + a.y * (11 * PX - rc), ARM_A, ARM_B, -b.x, -b.y);
+    P[R.ELBOW_F].x = ha.jx; P[R.ELBOW_F].y = ha.jy; P[R.HAND_F].x = ha.ex; P[R.HAND_F].y = ha.ey;
+
+    // Back arm: tentacle > grabbing the wall/ceiling > swinging.
+    const tn = this.tentacle, H = this.hand;
+    let hx, hy, plant = false;
     if (tn.state !== 'idle') {
-      const d = dist(N.x, N.y, tn.tip.x, tn.tip.y) || 1;
-      const ux = (tn.tip.x - N.x) / d, uy = (tn.tip.y - N.y) / d;
-      pts[R.ELBOW_B].x = N.x + ux * 5.5 * PX; pts[R.ELBOW_B].y = N.y + uy * 5.5 * PX + PX;
-      pts[R.HAND_B].x = N.x + ux * 11 * PX; pts[R.HAND_B].y = N.y + uy * 11 * PX;
-    } else if (flat || this.mode === 'wall') {
-      // keep the crawling/climbing back arm from the pose
-    } else if (running) {
-      const sw = Math.sin(this.runPhase) * 3 * PX;
-      pts[R.ELBOW_B].x = N.x + sw * 0.5; pts[R.ELBOW_B].y = N.y + 6 * PX;
-      pts[R.HAND_B].x = N.x + sw; pts[R.HAND_B].y = N.y + 12 * PX;
+      const d = dist(neck.x, neck.y, tn.tip.x, tn.tip.y) || 1;
+      hx = neck.x + (tn.tip.x - neck.x) / d * 11 * PX; hy = neck.y + (tn.tip.y - neck.y) / d * 11 * PX;
+    } else if (grounded && u.y > -0.6) {
+      const dir = norm(-u.x * 0.6 + fx, -u.y * 0.6 + fy);
+      const r = map.raycast(neck.x, neck.y, dir.x, dir.y, 13 * PX);
+      if (r.hit) { hx = r.x - dir.x; hy = r.y - dir.y; plant = true; }
     }
+    if (hx === undefined) {
+      const sw = grounded ? Math.sin(this.t * 9) * Math.min(1, speed / 250) * 3 * PX : 0;
+      hx = neck.x - b.x * 11 * PX + bt.x * sw - bt.x * 1.5 * PX;
+      hy = neck.y - b.y * 11 * PX + bt.y * sw - bt.y * 1.5 * PX;
+    }
+    this.stepLimb(H, hx, hy, plant, 5 * PX, null, dt, 10);
+    const hb = ik2(neck.x, neck.y, H.x, H.y, ARM_A, ARM_B, -bt.x - b.x * 0.3, -bt.y - b.y * 0.3);
+    P[R.ELBOW_B].x = hb.jx; P[R.ELBOW_B].y = hb.jy; P[R.HAND_B].x = hb.ex; P[R.HAND_B].y = hb.ey;
+
     for (const q of this.pieces) q.updateBounds();
   }
 
   render(fb) {
     if (this.dead) return;
-    this.computePose();
     // Dash afterimages.
     for (const tr of this.trail) {
       for (const q of this.pieces) q.raster(fb, DASH_GHOST, tr.t * 2, tr.x - this.x, tr.y - this.y);
     }
-    const pts = this.pts, f = this.facing;
+    const pts = this.pts, b = this.bodyUp, s = this.side;
+    const back = { x: b.y * s, y: -b.x * s };      // behind the body
     // Writhing tendrils out of the back.
     const N = pts[R.NECK], Pl = pts[R.PELVIS];
     for (let i = 0; i < 3; i++) {
       const k = 0.2 + i * 0.3;
-      let x = lerp(N.x, Pl.x, k) / PX - f * 3, y = lerp(N.y, Pl.y, k) / PX;
-      let ang = Math.atan2(-0.5 + i * 0.4, -f) + Math.sin(this.t * 3 + i * 1.7) * 0.4;
+      let x = lerp(N.x, Pl.x, k) / PX + back.x * 3, y = lerp(N.y, Pl.y, k) / PX + back.y * 3;
+      let ang = Math.atan2(back.y + b.y * (0.5 - i * 0.4), back.x + b.x * (0.5 - i * 0.4)) + Math.sin(this.t * 3 + i * 1.7) * 0.4;
       for (let sgi = 0; sgi < 7; sgi++) {
         ang += Math.sin(this.t * 4 + i + sgi * 0.8) * 0.25;
         const nx = x + Math.cos(ang) * 1.2, ny = y + Math.sin(ang) * 1.2;
         fb.put(x, y, sgi < 3 ? TENT_OUT : TENT_MID);
-        if (sgi < 3) fb.put(x, y + 1, TENT_OUT);
+        if (sgi < 3) fb.put(x - b.x, y - b.y, TENT_OUT);
         x = nx; y = ny;
       }
       fb.put(x, y, TENT_HI);
@@ -581,8 +568,9 @@ class Player {
     this.renderGun(fb);
     if (this.biteT > 0) {
       const m = this.mouth(), mx = m.x / PX, my = m.y / PX;
-      fb.put(mx, my, JAW_C); fb.put(mx + this.facing, my - 1, JAW_C); fb.put(mx + this.facing, my + 1, JAW_C);
-      fb.put(mx + this.facing * 2, my - 1, TEETH_C); fb.put(mx + this.facing * 2, my + 1, TEETH_C);
+      const f = { x: -b.y * s, y: b.x * s };
+      fb.put(mx, my, JAW_C); fb.put(mx + f.x - b.x, my + f.y - b.y, JAW_C); fb.put(mx + f.x + b.x, my + f.y + b.y, JAW_C);
+      fb.put(mx + f.x * 2 - b.x, my + f.y * 2 - b.y, TEETH_C); fb.put(mx + f.x * 2 + b.x, my + f.y * 2 + b.y, TEETH_C);
     }
   }
 

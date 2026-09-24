@@ -123,7 +123,8 @@ class NPC {
     this.drive = 0;
   }
 
-  addBleed(pixels) { this.bleedRate += pixels * 0.35; }
+  // Ordinary wounds bleed, but cap out; vital zones (heart, arteries) add on top directly.
+  addBleed(pixels) { this.woundBleed = Math.min(4, (this.woundBleed || 0) + pixels * 0.2); }
 
   // Fatal areas: brain = instant, heart = fast bleed-out, spine = paralysed,
   // arteries (neck, thigh) = heavy bleeding.
@@ -275,16 +276,17 @@ class NPC {
       return;
     }
     if (lost && this.alive) {
-      this.damage(25, this.lastHitBy || kind);
-      this.knock(3);
-      if (!this.legsIntact() && !this.legsLost && this.alive) {
+      const legGone = !this.legsIntact() && !this.legsLost;
+      this.damage(legGone ? 10 : 20, this.lastHitBy || kind);
+      this.knock(legGone ? 1.2 : 3);
+      if (legGone && this.alive) {
         // Lost a leg: crawl away, lie there, or go into shock and bleed out.
         this.legsLost = true;
         this.downed = true;
         this.react = null;
         const roll = Math.random();
-        this.crawling = roll < 0.5;
-        if (roll > 0.78) { this.bleedRate += 10; this.say('...', 1.5); }
+        this.crawling = roll < 0.6;
+        if (roll > 0.8) { this.bleedRate += 6; this.say('...', 1.5); }
         else this.say(pick(LEGLESS_LINES), 2);
       } else if (this.alive) this.say('AAAAAAAAH!', 1.5);
     }
@@ -299,7 +301,7 @@ class NPC {
   seesPlayer(range) {
     const pl = this.game.player;
     const h = this.rag.head;
-    const px = pl.x, py = pl.y - 60;
+    const px = pl.cx, py = pl.cy;
     const d = dist(h.x, h.y, px, py);
     if (d > range) return false;
     return !this.game.map.raycast(h.x, h.y, (px - h.x) / d, (py - h.y) / d, d).hit;
@@ -314,10 +316,12 @@ class NPC {
     const r = this.rag;
     if (!this.alive) { this.updateDead(dt); return; }
     // Downed from wounds = bleeding out; a pure spine injury just paralyses.
-    if (this.downed && this.hp < this.maxHp * 0.25) this.bleedRate = Math.max(this.bleedRate, 1.8);
-    if (this.bleedRate > 0) {
-      this.damage(this.bleedRate * dt, this.lastHitBy || 'bleeding');
+    if (this.downed && this.hp < this.maxHp * 0.25) this.bleedRate = Math.max(this.bleedRate, this.legsLost ? 0.8 : 1.8);
+    const bleed = this.bleedRate + (this.woundBleed || 0);
+    if (bleed > 0) {
+      this.damage(bleed * dt, this.lastHitBy || 'bleeding');
       this.bleedRate *= Math.exp(-dt * (this.downed ? 0.03 : 0.15));
+      this.woundBleed = (this.woundBleed || 0) * Math.exp(-dt * 0.1);
     }
     if (!this.alive) return;
     if (!this.main.has(r.head) || !this.headIntact()) { this.die(this.lastHitBy || 'trauma'); return; }
@@ -456,7 +460,7 @@ class NPC {
       this.sawPlayerT = 3;
       this.facing = pl.x < this.rootX ? -1 : 1;
       const N = this.rag.joint[R.NECK];
-      this.aimAng = Math.atan2(pl.y - 60 - N.y, (pl.x - N.x) * this.facing);
+      this.aimAng = Math.atan2(pl.cy - N.y, (pl.cx - N.x) * this.facing);
       const d = Math.abs(pl.x - this.rootX);
       if (d < 140 && this.pathClear(-this.facing)) { this.speed = 60; this.backing = true; }
       else this.backing = false;

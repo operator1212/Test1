@@ -109,7 +109,7 @@ class Game {
       if (h) { h.piece.stain(h.idx, c, 0.45); return true; }
     }
     const pl = this.player;
-    if (Math.abs(x - pl.x) < 50 && y > pl.y - 130 && y < pl.y + 10) {
+    if (!pl.dead && dist(x, y, pl.cx, pl.cy) < 80) {
       for (let k = pl.pieces.length - 1; k >= 0; k--) {
         const idx = pl.pieces[k].cellAt(x, y);
         if (idx >= 0) { pl.pieces[k].stain(idx, c, 0.5); return true; }
@@ -311,18 +311,19 @@ class Game {
       }
     }
     const pl = this.player;
-    const d = dist(x, y, pl.x, pl.y - 55) || 1;
+    const d = dist(x, y, pl.cx, pl.cy) || 1;
     if (d < R * 1.4 && !pl.dead) {
       const f = 1 - d / (R * 1.4);
-      pl.vx += (pl.x - x) / d * 900 * f;
-      pl.vy += ((pl.y - 55 - y) / d * 900 - 350) * f;
-      pl.hurt(28 * f, 0, 0, pl.x, pl.y - 55);
+      pl.vx += (pl.cx - x) / d * 900 * f;
+      pl.vy += ((pl.cy - y) / d * 900 - 350) * f;
+      pl.detachT = 0.25;
+      pl.hurt(28 * f, 0, 0, pl.cx, pl.cy);
     }
   }
 
   npcShoot(npc) {
     const H = npc.rag.joint[R.HAND_F], pl = this.player;
-    const tx = pl.x, ty = pl.y - 55;
+    const tx = pl.cx, ty = pl.cy;
     const a = Math.atan2(ty - H.y, tx - H.x) + rand(-0.06, 0.06);
     const sp = 950;
     const mx = H.x + Math.cos(a) * 12, my = H.y + Math.sin(a) * 12;
@@ -401,7 +402,7 @@ class Game {
     const pl = this.player, c = this.cam, v = this.view;
     const m = this.mouseWorld();
     const tx = pl.x + clamp(m.x - pl.x, -500, 500) * 0.22;
-    const ty = pl.y - 70 + clamp(m.y - pl.y, -400, 400) * 0.18;
+    const ty = pl.y - 20 + clamp(m.y - pl.y, -400, 400) * 0.18;
     c.x = lerp(c.x, tx, 1 - Math.exp(-dt * 7));
     c.y = lerp(c.y, ty, 1 - Math.exp(-dt * 7));
     const hw = v.w * PX / 2, hh = v.h * PX / 2;
@@ -528,8 +529,9 @@ class Game {
     // Help.
     if (this.showHelp) {
       const lines = [
-        ['A D', 'MOVE (AUTO VAULT + SQUEEZE)'], ['SPACE', 'JUMP / WALL JUMP / LET GO'], ['W S', 'IN AIR: GRAB WALL/CEILING, CLIMB'],
-        ['S', 'ON GROUND: SQUEEZE LOW'], ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
+        ['WASD', 'MOVE ALONG FLOORS, WALLS, CEILINGS'], ['INTO A WALL', 'RUNS UP IT AND OVER THE TOP'],
+        ['AWAY', 'PUSH OFF A WALL/CEILING TO LET GO'], ['SPACE', 'LEAP OFF WHATEVER YOU HOLD'],
+        ['SHIFT', 'DASH (+ WASD DIRECTION), RAMS'],
         ['LMB', 'FIRE WEAPON'], ['RMB HOLD', 'TENTACLE: LATCH/ZIP, GRAB + SWING'],
         ['E / HOLD E', 'RIP OFF / EAT WHAT YOU HOLD'], ['1-5 Q WHEEL', 'SWITCH WEAPON'], ['F', 'SLOW MOTION'],
         ['G T Y', 'SPAWN GUARD / SCIENTIST / SOLDIER'], ['K / O', 'GOD MODE / SCREEN SHAKE'],

@@ -21,10 +21,9 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 
 | Input | Action |
 |---|---|
-| A / D | move. You vault ledges up to about 2 tiles and squeeze through low gaps automatically |
-| Space | jump, wall jump off a wall you're clinging to, or let go of a ceiling |
-| W | jump from the ground. In the air: grab a wall or ceiling. On a wall: climb up |
-| S | on a wall: climb down. On the ground: squeeze low. On a ceiling: drop |
+| WASD | move along whatever you're on: floors, walls, ceilings, vents. Pushing into a wall runs you up it and over the top |
+| push away | pushing away from a wall or ceiling lets go of it |
+| Space | leap off whatever you're holding, along its surface normal. W also jumps from a floor |
 | Shift | dash (hold WASD to pick a direction). One air dash per jump, usable off walls; it rams NPCs |
 | Mouse | aim |
 | LMB | fire the current weapon |
@@ -90,13 +89,17 @@ No build step and no dependencies. It's plain HTML5 canvas and JavaScript.
 - **Tentacle**: latch onto terrain to zip and swing, or grab any body part and swing it with the
   mouse to slam or throw it. E rips the grabbed part off a living NPC. Hold E on a loose part
   or corpse to pull it to your mouth and chew through it bite by bite, healing as you go.
-- **Movement ("flesh-cling")**:
-  - **Walls and ceilings:** push into a wall in mid-air to stick to it, then climb with W and
-    S. Reaching the top pops you over the ledge. Hold W against a ceiling to crawl along it
-    upside down.
-  - **Ledges and gaps:** running into a ledge vaults it automatically. You compress to crawl
-    through low gaps, like the vent under the first room.
-  - **Dash and wall jump:** there's also a dash and a wall jump.
+- **Movement (adhesive core)** (`js/player.js`):
+  - **The core:** your body is a small round core that feels every surface around it
+    (ray casts in all directions) and floats at leg height above whatever it's on, held there
+    by a damped spring. Floors, walls, ceilings and vents are all the same thing.
+  - **Moving:** input is projected along the surface. Pushing into a wall runs you up it and
+    around the corner onto the top, and low ceilings make you crouch, then lean into a crawl.
+    Push away from a surface to let go, or leap off it with Space.
+  - **The body:** nothing is a canned animation. Feet and a free hand plant on real surface
+    points and step when they drift too far, knees and elbows are solved with two-bone IK,
+    and the body axis follows the surface smoothly.
+  - **Getting hit:** enemy bullets hit your actual pixels.
 - **Kill slow-down**: killing a soldier who was attacking you briefly slows time.
 - **NPCs** (`js/npc.js`):
   - **Security guards** (helmet, visor, uniform) wave at you.
